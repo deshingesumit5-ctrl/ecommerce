@@ -88,7 +88,7 @@
 
                 <div class="flex items-center justify-between pt-1">
                     <label class="flex items-center space-x-2 text-xs text-slate-400 cursor-pointer">
-                        <input type="checkbox" name="remember" class="rounded bg-slate-950 border-slate-800 text-emerald-600 focus:ring-emerald-500">
+                        <input type="checkbox" name="remember" value="1" checked class="rounded bg-slate-950 border-slate-800 text-emerald-600 focus:ring-emerald-500">
                         <span>Remember this device</span>
                     </label>
                 </div>

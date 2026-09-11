@@ -49,6 +49,7 @@ interface AppContextType {
   deliveryDistanceKm: number;
   categories: Category[];
   products: Product[];
+  coupons: Coupon[];
   cart: CartItem[];
   appliedCoupon: Coupon | null;
   orders: Order[];
@@ -74,7 +75,7 @@ interface AppContextType {
   removeFromCart: (productId: number) => void;
   updateQuantity: (productId: number, qty: number) => void;
   clearCart: () => void;
-  applyCoupon: (code: string) => { success: boolean; message: string };
+  applyCoupon: (code: string) => Promise<{ success: boolean; message: string }>;
   removeCoupon: () => void;
   placeOrder: (paymentMode: PaymentMode, address: string) => Promise<Order | null>;
   markNotificationAsRead: (id: string) => void;
@@ -87,22 +88,6 @@ interface AppContextType {
     finalAmount: number;
   };
 }
-
-const AVAILABLE_COUPONS: Coupon[] = [
-  {
-    code: 'FIRST50',
-    discount_type: 'FIXED',
-    discount_value: 50,
-    min_order_value: 299,
-  },
-  {
-    code: 'SAVE10',
-    discount_type: 'PERCENTAGE',
-    discount_value: 10,
-    min_order_value: 499,
-    max_discount: 100,
-  },
-];
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
@@ -124,6 +109,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   // Real data state
   const [categories, setCategories] = useState<Category[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
+  const [coupons, setCoupons] = useState<Coupon[]>([]);
   const [cart, setCart] = useState<CartItem[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [appliedCoupon, setAppliedCoupon] = useState<Coupon | null>(null);
@@ -131,27 +117,100 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(false);
 
-  // Restore authenticated customer session on launch
+  // Restore state from AsyncStorage on launch (keeps cart, session, location, and cache on page refresh)
   useEffect(() => {
-    const restoreSession = async () => {
+    const restoreAll = async () => {
       try {
-        const saved = await AsyncStorage.getItem('customer_session');
-        if (saved) {
-          const parsed = JSON.parse(saved);
-          setCustomer(parsed);
-          setIsAuthenticated(true);
-          if (parsed.address) {
-            setCustomerLocation((prev) => ({
-              ...prev,
-              label: parsed.address + (parsed.city ? ', ' + parsed.city : ''),
-            }));
-          }
+        const [
+          savedCust,
+          savedCart,
+          savedCoupon,
+          savedLoc,
+          cachedProds,
+          cachedCats,
+          cachedStores,
+          cachedOrders,
+        ] = await Promise.all([
+          AsyncStorage.getItem('customer_session'),
+          AsyncStorage.getItem('customer_cart'),
+          AsyncStorage.getItem('customer_applied_coupon'),
+          AsyncStorage.getItem('customer_location'),
+          AsyncStorage.getItem('cached_products'),
+          AsyncStorage.getItem('cached_categories'),
+          AsyncStorage.getItem('cached_stores'),
+          AsyncStorage.getItem('cached_orders'),
+        ]);
+
+        if (savedCust) {
+          try {
+            const parsed = JSON.parse(savedCust);
+            setCustomer(parsed);
+            setIsAuthenticated(true);
+          } catch (e) {}
+        }
+        if (savedCart) {
+          try {
+            const parsedCart = JSON.parse(savedCart);
+            if (Array.isArray(parsedCart) && parsedCart.length > 0) {
+              setCart(parsedCart);
+            }
+          } catch (e) {}
+        }
+        if (savedCoupon) {
+          try {
+            const parsedCoupon = JSON.parse(savedCoupon);
+            if (parsedCoupon && parsedCoupon.code) {
+              setAppliedCoupon(parsedCoupon);
+            }
+          } catch (e) {}
+        }
+        if (savedLoc) {
+          try {
+            const parsedLoc = JSON.parse(savedLoc);
+            if (parsedLoc && parsedLoc.label) {
+              setCustomerLocation(parsedLoc);
+            }
+          } catch (e) {}
+        }
+        if (cachedProds) {
+          try {
+            const parsed = JSON.parse(cachedProds);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setProducts(parsed);
+            }
+          } catch (e) {}
+        }
+        if (cachedCats) {
+          try {
+            const parsed = JSON.parse(cachedCats);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setCategories(parsed);
+            }
+          } catch (e) {}
+        }
+        if (cachedStores) {
+          try {
+            const parsed = JSON.parse(cachedStores);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setStores(parsed);
+              setSelectedStore(parsed[0]);
+            }
+          } catch (e) {}
+        }
+        if (cachedOrders) {
+          try {
+            const parsed = JSON.parse(cachedOrders);
+            if (Array.isArray(parsed) && parsed.length > 0) {
+              setOrders(parsed);
+              setActiveOrder(parsed[0]);
+            }
+          } catch (e) {}
         }
       } catch (e) {
-        console.warn('Error restoring customer session:', e);
+        console.warn('Error restoring persisted state:', e);
       }
     };
-    restoreSession();
+    restoreAll();
   }, []);
 
   // Fetch real data from backend API & DB
@@ -159,28 +218,51 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       if (!isBackground) setLoading(true);
       const timestamp = Date.now();
-      const [prodRes, catRes, storeRes, orderRes, notifRes] = await Promise.allSettled([
+      const [prodRes, catRes, storeRes, orderRes, notifRes, couponRes] = await Promise.allSettled([
         axios.get(`${API_BASE_URL}/products?_t=${timestamp}`),
         axios.get(`${API_BASE_URL}/categories?_t=${timestamp}`),
         axios.get(`${API_BASE_URL}/stores?_t=${timestamp}`),
         axios.get(`${API_BASE_URL}/orders?_t=${timestamp}`),
         axios.get(`${API_BASE_URL}/notifications?app=customer&_t=${timestamp}`),
+        axios.get(`${API_BASE_URL}/coupons?_t=${timestamp}`),
       ]);
 
       if (prodRes.status === 'fulfilled' && Array.isArray(prodRes.value.data)) {
-        setProducts(prodRes.value.data);
+        const freshProducts = prodRes.value.data;
+        setProducts(freshProducts);
+        AsyncStorage.setItem('cached_products', JSON.stringify(freshProducts)).catch(() => {});
+
+        // Keep saved cart items and sync product details (pricing/name/stock) with latest DB products
+        setCart((prevCart) => {
+          if (!prevCart || prevCart.length === 0) return prevCart;
+          const updated = prevCart.map((item) => {
+            const latest = freshProducts.find((p: Product) => p.id === item.product.id);
+            if (latest) {
+              return { ...item, product: latest };
+            }
+            return item;
+          });
+          AsyncStorage.setItem('customer_cart', JSON.stringify(updated)).catch(() => {});
+          return updated;
+        });
       }
       if (catRes.status === 'fulfilled' && Array.isArray(catRes.value.data)) {
         setCategories(catRes.value.data);
+        AsyncStorage.setItem('cached_categories', JSON.stringify(catRes.value.data)).catch(() => {});
+      }
+      if (couponRes.status === 'fulfilled' && Array.isArray(couponRes.value.data)) {
+        setCoupons(couponRes.value.data);
       }
       if (storeRes.status === 'fulfilled' && Array.isArray(storeRes.value.data) && storeRes.value.data.length > 0) {
         setStores(storeRes.value.data);
+        AsyncStorage.setItem('cached_stores', JSON.stringify(storeRes.value.data)).catch(() => {});
         if (!selectedStore) {
           setSelectedStore(storeRes.value.data[0]);
         }
       }
       if (orderRes.status === 'fulfilled' && Array.isArray(orderRes.value.data)) {
         setOrders(orderRes.value.data);
+        AsyncStorage.setItem('cached_orders', JSON.stringify(orderRes.value.data)).catch(() => {});
         if (orderRes.value.data.length > 0 && !activeOrder) {
           setActiveOrder(orderRes.value.data[0]);
         }
@@ -246,7 +328,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   }, [customerLocation, selectedStore]);
 
   const setCustomerLocationCoords = (label: string, lat: number, lng: number) => {
-    setCustomerLocation({ label, lat, lng });
+    const loc = { label, lat, lng };
+    setCustomerLocation(loc);
+    AsyncStorage.setItem('customer_location', JSON.stringify(loc)).catch(() => {});
   };
 
   // Customer Auth Methods
@@ -449,12 +533,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {}
   };
 
-  const addToCart = (product: Product) => {
+  const updateCartState = (updater: CartItem[] | ((prev: CartItem[]) => CartItem[])) => {
     setCart((prev) => {
+      const nextCart = typeof updater === 'function' ? updater(prev) : updater;
+      AsyncStorage.setItem('customer_cart', JSON.stringify(nextCart)).catch(() => {});
+      return nextCart;
+    });
+  };
+
+  const addToCart = (product: Product) => {
+    updateCartState((prev) => {
       const existing = prev.find((item) => item.product.id === product.id);
       if (existing) {
         return prev.map((item) =>
-          item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
+          item.product.id === product.id ? { ...item, product, quantity: item.quantity + 1 } : item
         );
       }
       return [...prev, { product, quantity: 1 }];
@@ -462,7 +554,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const removeFromCart = (productId: number) => {
-    setCart((prev) => prev.filter((item) => item.product.id !== productId));
+    updateCartState((prev) => prev.filter((item) => item.product.id !== productId));
   };
 
   const updateQuantity = (productId: number, qty: number) => {
@@ -470,7 +562,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       removeFromCart(productId);
       return;
     }
-    setCart((prev) =>
+    updateCartState((prev) =>
       prev.map((item) =>
         item.product.id === productId ? { ...item, quantity: qty } : item
       )
@@ -480,28 +572,97 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const clearCart = () => {
     setCart([]);
     setAppliedCoupon(null);
+    AsyncStorage.removeItem('customer_cart').catch(() => {});
+    AsyncStorage.removeItem('customer_applied_coupon').catch(() => {});
   };
 
-  const applyCoupon = (code: string) => {
-    const coupon = AVAILABLE_COUPONS.find(
-      (c) => c.code.toUpperCase() === code.trim().toUpperCase()
-    );
-    if (!coupon) {
+  const applyCoupon = async (code: string): Promise<{ success: boolean; message: string }> => {
+    const trimmedCode = code.trim().toUpperCase();
+    if (!trimmedCode) {
+      return { success: false, message: 'Please enter a coupon code.' };
+    }
+
+    const { subtotal } = getCartSummary();
+
+    // Call dynamic backend API
+    try {
+      const res = await axios.post(`${API_BASE_URL}/coupons/apply`, {
+        code: trimmedCode,
+        subtotal,
+      });
+
+      if (res.data && res.data.success && res.data.coupon) {
+        const c = res.data.coupon;
+        const normalizedCoupon: Coupon = {
+          id: c.id,
+          code: c.code,
+          description: c.description,
+          discount_type: c.discount_type,
+          discount_value: Number(c.discount_value),
+          min_order_amount: Number(c.min_order_amount),
+          min_order_value: Number(c.min_order_amount),
+          max_discount_amount: c.max_discount_amount !== null && c.max_discount_amount !== undefined ? Number(c.max_discount_amount) : null,
+          max_discount: c.max_discount_amount !== null && c.max_discount_amount !== undefined ? Number(c.max_discount_amount) : null,
+          start_date: c.start_date,
+          end_date: c.end_date,
+          status: c.status,
+        };
+        setAppliedCoupon(normalizedCoupon);
+        AsyncStorage.setItem('customer_applied_coupon', JSON.stringify(normalizedCoupon)).catch(() => {});
+        return { success: true, message: res.data.message || `Coupon ${c.code} applied successfully!` };
+      }
+
+      if (res.data && res.data.message) {
+        return { success: false, message: res.data.message };
+      }
+    } catch (e: any) {
+      console.warn('Backend coupon apply API error, verifying with live coupons:', e);
+    }
+
+    // Fallback against live fetched coupons list from admin_web
+    const found = coupons.find((c) => c.code.toUpperCase() === trimmedCode);
+    if (!found || (found.status && found.status !== 'active')) {
       return { success: false, message: 'Invalid coupon code.' };
     }
-    const { subtotal } = getCartSummary();
-    if (subtotal < coupon.min_order_value) {
+
+    // Date validity check
+    const today = new Date().toISOString().split('T')[0];
+    if (found.end_date) {
+      const endDate = found.end_date.split('T')[0];
+      if (today > endDate) {
+        return { success: false, message: 'Coupon validity expired' };
+      }
+    }
+    if (found.start_date) {
+      const startDate = found.start_date.split('T')[0];
+      if (today < startDate) {
+        return { success: false, message: 'Coupon is not active yet.' };
+      }
+    }
+
+    // Check usage limit
+    if (found.usage_limit && found.times_used && found.times_used >= found.usage_limit) {
+      return { success: false, message: 'Coupon usage limit reached.' };
+    }
+
+    // Min order amount check
+    const minOrder = Number(found.min_order_amount ?? found.min_order_value ?? 0);
+    if (subtotal < minOrder) {
+      const formattedMin = Math.round(minOrder);
       return {
         success: false,
-        message: `Min order of ₹${coupon.min_order_value} required for this coupon.`,
+        message: `Coupons will apply above ${formattedMin} rs products`,
       };
     }
-    setAppliedCoupon(coupon);
-    return { success: true, message: `Coupon ${coupon.code} applied successfully!` };
+
+    setAppliedCoupon(found);
+    AsyncStorage.setItem('customer_applied_coupon', JSON.stringify(found)).catch(() => {});
+    return { success: true, message: `Coupon ${found.code} applied successfully!` };
   };
 
   const removeCoupon = () => {
     setAppliedCoupon(null);
+    AsyncStorage.removeItem('customer_applied_coupon').catch(() => {});
   };
 
   const getCartSummary = () => {
@@ -512,17 +673,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     );
 
     let discount = 0;
-    if (appliedCoupon && subtotal >= appliedCoupon.min_order_value) {
-      if (appliedCoupon.discount_type === 'FIXED') {
-        discount = appliedCoupon.discount_value;
-      } else {
-        discount = (subtotal * appliedCoupon.discount_value) / 100;
-        if (appliedCoupon.max_discount && discount > appliedCoupon.max_discount) {
-          discount = appliedCoupon.max_discount;
+    if (appliedCoupon) {
+      const minAmount = Number(appliedCoupon.min_order_amount ?? appliedCoupon.min_order_value ?? 0);
+      if (subtotal >= minAmount) {
+        const isPercentage = String(appliedCoupon.discount_type).toLowerCase() === 'percentage';
+        const discValue = Number(appliedCoupon.discount_value || 0);
+        if (isPercentage) {
+          discount = (subtotal * discValue) / 100;
+          const maxCap = appliedCoupon.max_discount_amount !== undefined && appliedCoupon.max_discount_amount !== null
+            ? Number(appliedCoupon.max_discount_amount)
+            : (appliedCoupon.max_discount !== undefined && appliedCoupon.max_discount !== null ? Number(appliedCoupon.max_discount) : null);
+          if (maxCap !== null && discount > maxCap) {
+            discount = maxCap;
+          }
+        } else {
+          discount = Math.min(subtotal, discValue);
         }
       }
     }
 
+    discount = Math.round(discount * 100) / 100;
     const deliveryCharge = subtotal >= 500 || subtotal === 0 ? 0 : 40;
     const finalAmount = Math.max(0, subtotal - discount + deliveryCharge);
 
@@ -568,6 +738,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       })),
       subtotal: summary.subtotal,
       discount: summary.discount,
+      coupon_code: appliedCoupon ? appliedCoupon.code : null,
+      coupon_id: appliedCoupon ? appliedCoupon.id : null,
       delivery_charge: summary.deliveryCharge,
       final_amount: summary.finalAmount,
       payment_mode: paymentMode,
@@ -639,6 +811,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deliveryDistanceKm,
         categories,
         products,
+        coupons,
         cart,
         appliedCoupon,
         orders,

@@ -42,7 +42,7 @@ export const DashboardScreen: React.FC<{
     .filter((o) => o.delivery_status !== 'DELIVERED' && o.payment_mode === 'COD')
     .reduce((sum, o) => sum + o.cod_amount_to_collect, 0);
 
-  const activeOrders = orders.filter((o) => o.delivery_status !== 'DELIVERED');
+  const displayOrders = orders;
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
@@ -114,27 +114,31 @@ export const DashboardScreen: React.FC<{
         </View>
       </View>
 
-      {/* Active Delivery Pipeline Section */}
+      {/* Assigned Delivery Orders Pipeline Section */}
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Active Delivery Queue ({activeOrders.length})</Text>
+        <Text style={styles.sectionTitle}>Assigned Delivery Orders ({displayOrders.length})</Text>
         <TouchableOpacity onPress={onNavigateToOrders}>
           <Text style={styles.seeAllText}>View All</Text>
         </TouchableOpacity>
       </View>
 
-      {activeOrders.length === 0 ? (
+      {displayOrders.length === 0 ? (
         <View style={styles.emptyBox}>
           <CheckCircle2 size={36} color="#10b981" />
           <Text style={styles.emptyTitle}>No data available</Text>
-          <Text style={styles.emptySub}>No pending deliveries. New orders from admin will appear here.</Text>
+          <Text style={styles.emptySub}>No assigned deliveries found. New orders from admin will appear here.</Text>
         </View>
       ) : (
-        activeOrders.map((order) => {
+        displayOrders.map((order) => {
+          const isDelivered = order.delivery_status === 'DELIVERED';
           const isOut = order.delivery_status === 'OUT_FOR_DELIVERY';
           return (
             <TouchableOpacity
               key={order.id}
-              style={styles.orderCard}
+              style={[
+                styles.orderCard,
+                isDelivered && styles.orderCardDelivered,
+              ]}
               activeOpacity={0.8}
               onPress={() => setSelectedOrderForModal(order)}
             >
@@ -145,16 +149,24 @@ export const DashboardScreen: React.FC<{
                 <View
                   style={[
                     styles.statusBadge,
-                    isOut ? styles.statusBadgeOut : styles.statusBadgeAssigned,
+                    isDelivered
+                      ? styles.statusBadgeDelivered
+                      : isOut
+                      ? styles.statusBadgeOut
+                      : styles.statusBadgeAssigned,
                   ]}
                 >
                   <Text
                     style={[
                       styles.statusBadgeText,
-                      isOut ? styles.textOut : styles.textAssigned,
+                      isDelivered
+                        ? styles.textDelivered
+                        : isOut
+                        ? styles.textOut
+                        : styles.textAssigned,
                     ]}
                   >
-                    {isOut ? 'OUT FOR DELIVERY' : 'READY FOR PICKUP'}
+                    {isDelivered ? 'DELIVERED' : isOut ? 'OUT FOR DELIVERY' : 'READY FOR PICKUP'}
                   </Text>
                 </View>
               </View>
@@ -171,7 +183,7 @@ export const DashboardScreen: React.FC<{
               <View style={styles.paymentInfoRow}>
                 <View style={styles.paymentModeBadge}>
                   <Text style={styles.paymentModeText}>
-                    {order.payment_mode === 'COD' ? '💵 COD: Collect ₹' + order.cod_amount_to_collect : '💳 Online: Already Paid'}
+                    {order.payment_mode === 'COD' ? '💵 COD: ' + (isDelivered || order.is_cod_collected ? 'Received ₹' + order.cod_amount_to_collect : 'Collect ₹' + order.cod_amount_to_collect) : '💳 Online: Already Paid'}
                   </Text>
                 </View>
                 <Text style={styles.itemCountText}>
@@ -179,9 +191,16 @@ export const DashboardScreen: React.FC<{
                 </Text>
               </View>
 
-              {/* Action Buttons */}
+              {/* Action Buttons or Delivered Status */}
               <View style={styles.actionRow}>
-                {!isOut ? (
+                {isDelivered ? (
+                  <View style={styles.deliveredBanner}>
+                    <CheckCircle2 size={16} color="#10b981" style={{ marginRight: 6 }} />
+                    <Text style={styles.deliveredBannerText}>
+                      Delivered {order.delivered_time ? `at ${order.delivered_time}` : 'Successfully'} • {order.payment_mode === 'COD' ? 'Cash Received' : 'Paid Online'}
+                    </Text>
+                  </View>
+                ) : !isOut ? (
                   <TouchableOpacity
                     style={styles.startBtn}
                     onPress={() => updateOrderStatus(order.id, 'OUT_FOR_DELIVERY')}
@@ -312,9 +331,11 @@ const styles = StyleSheet.create({
   statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6 },
   statusBadgeAssigned: { backgroundColor: '#eff6ff' },
   statusBadgeOut: { backgroundColor: '#fef3c7' },
+  statusBadgeDelivered: { backgroundColor: '#ecfdf5' },
   statusBadgeText: { fontSize: 10, fontWeight: '800' },
   textAssigned: { color: '#2563eb' },
   textOut: { color: '#d97706' },
+  textDelivered: { color: '#059669' },
   customerName: { fontSize: 15, fontWeight: '800', color: '#0f172a', marginBottom: 6 },
   infoRow: { flexDirection: 'row', alignItems: 'center', marginVertical: 2 },
   addressText: { fontSize: 12, color: '#475569', marginLeft: 6, flex: 1, lineHeight: 16 },
@@ -323,6 +344,27 @@ const styles = StyleSheet.create({
   paymentModeText: { fontSize: 11, fontWeight: '700', color: '#0f172a' },
   itemCountText: { fontSize: 11, color: '#64748b' },
   actionRow: { marginTop: 12 },
+  orderCardDelivered: {
+    borderLeftWidth: 4,
+    borderLeftColor: '#10b981',
+    backgroundColor: '#ffffff',
+  },
+  deliveredBanner: {
+    backgroundColor: '#f0fdf4',
+    borderWidth: 1,
+    borderColor: '#bbf7d0',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+  },
+  deliveredBannerText: {
+    color: '#166534',
+    fontWeight: '700',
+    fontSize: 12,
+  },
   startBtn: {
     backgroundColor: '#0284c7',
     flexDirection: 'row',

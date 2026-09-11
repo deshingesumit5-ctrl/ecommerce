@@ -312,6 +312,11 @@
                     </div>
                 </div>
 
+                <!-- Settings Icon -->
+                <a href="{{ route('admin.settings.index') }}" class="p-1.5 rounded-lg transition focus:outline-none {{ request()->routeIs('admin.settings*') ? 'text-emerald-400 bg-slate-800' : 'text-slate-300 hover:text-white hover:bg-slate-700/70' }}" title="System & Store Settings">
+                    <i class="fa-solid fa-gear text-base"></i>
+                </a>
+
                 <div class="relative hidden lg:block" x-data="{ profileOpen: false }">
                     <button @click="profileOpen = !profileOpen" @click.away="profileOpen = false" class="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700/70 transition focus:outline-none" title="Admin Account">
                         <i class="fa-regular fa-user text-base"></i>

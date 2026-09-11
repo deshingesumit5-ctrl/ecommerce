@@ -66,11 +66,20 @@ export interface Customer {
 }
 
 export interface Coupon {
+  id?: number;
   code: string;
-  discount_type: 'PERCENTAGE' | 'FIXED';
+  description?: string | null;
+  discount_type: 'percentage' | 'fixed' | 'PERCENTAGE' | 'FIXED';
   discount_value: number;
-  min_order_value: number;
-  max_discount?: number;
+  min_order_amount: number;
+  min_order_value?: number;
+  max_discount_amount?: number | null;
+  max_discount?: number | null;
+  usage_limit?: number;
+  times_used?: number;
+  start_date?: string | null;
+  end_date?: string | null;
+  status?: string;
 }
 
 export interface OrderItem {

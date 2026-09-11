@@ -289,15 +289,19 @@
                             </td>
                             <td class="py-3.5 px-4">
                                 @if($rOrder->order_status === 'PLACED')
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800">Placed</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-100 text-amber-800 border border-amber-200">Placed</span>
                                 @elseif($rOrder->order_status === 'CONFIRMED')
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-800">Confirmed</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-100 text-blue-800 border border-blue-200">Confirmed</span>
                                 @elseif($rOrder->order_status === 'PACKED')
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800">Packed</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">Packed</span>
+                                @elseif($rOrder->order_status === 'ASSIGNED')
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-sky-100 text-sky-800 border border-sky-200">Assigned</span>
                                 @elseif($rOrder->order_status === 'OUT_FOR_DELIVERY')
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-800 animate-pulse">Out for Delivery</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-purple-100 text-purple-800 border border-purple-200 animate-pulse">Out for Delivery</span>
                                 @elseif($rOrder->order_status === 'DELIVERED')
-                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800">Delivered</span>
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">Delivered</span>
+                                @elseif($rOrder->order_status === 'CANCELLED')
+                                    <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-rose-100 text-rose-800 border border-rose-200">Cancelled</span>
                                 @else
                                     <span class="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-700">{{ $rOrder->order_status }}</span>
                                 @endif
@@ -313,7 +317,7 @@
                                 @endif
                             </td>
                             <td class="py-3.5 px-4 text-right">
-                                <a href="{{ route('admin.orders.show', $rOrder->id) }}" class="p-1.5 rounded-lg bg-slate-100 hover:bg-emerald-600 hover:text-white text-slate-600 transition inline-block">
+                                <a href="{{ route('admin.orders.show', $rOrder->id) }}" class="p-1.5 rounded-lg bg-slate-100 hover:bg-emerald-600 hover:text-white text-slate-600 transition inline-block" title="View Order Details">
                                     <i class="fa-solid fa-chevron-right text-xs"></i>
                                 </a>
                             </td>
@@ -335,7 +339,7 @@
                 <div onclick="window.location='{{ route('admin.orders.show', $mOrder->id) }}'" class="p-4 hover:bg-slate-50 active:bg-slate-100 transition cursor-pointer space-y-2">
                     <div class="flex items-center justify-between">
                         <span class="font-mono font-bold text-emerald-600 text-xs">{{ $mOrder->order_number }}</span>
-                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold {{ $mOrder->order_status === 'DELIVERED' ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800' }}">
+                        <span class="px-2 py-0.5 rounded-full text-[10px] font-bold {{ $mOrder->order_status === 'DELIVERED' ? 'bg-emerald-100 text-emerald-800' : ($mOrder->order_status === 'OUT_FOR_DELIVERY' ? 'bg-purple-100 text-purple-800' : ($mOrder->order_status === 'ASSIGNED' ? 'bg-sky-100 text-sky-800' : 'bg-amber-100 text-amber-800')) }}">
                             {{ $mOrder->order_status }}
                         </span>
                     </div>

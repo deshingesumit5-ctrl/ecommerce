@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Haversine Formula to calculate distance between two coordinates in Kilometers
  */
 export function calculateDistanceKm(lat1: number, lon1: number, lat2: number, lon2: number): number {

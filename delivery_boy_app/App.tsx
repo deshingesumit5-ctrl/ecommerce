@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, SafeAreaView, StatusBar } from 'react-native';
 import { DeliveryAppProvider, useDeliveryApp } from './src/context/DeliveryAppContext';
 import { LoginScreen } from './src/screens/LoginScreen';

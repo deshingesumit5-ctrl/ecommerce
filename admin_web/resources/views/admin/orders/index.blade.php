@@ -152,12 +152,22 @@
                             </td>
                             <td class="py-3.5 px-4">
                                 @if($order->deliveryBoy)
-                                    <span class="font-medium text-slate-800 flex items-center space-x-1">
-                                        <i class="fa-solid fa-motorcycle text-emerald-500 text-xs"></i>
-                                        <span>{{ $order->deliveryBoy->name }}</span>
-                                    </span>
+                                    <div>
+                                        <span class="font-medium text-slate-800 flex items-center space-x-1">
+                                            <i class="fa-solid fa-person-biking text-emerald-500 text-xs"></i>
+                                            <span>{{ $order->deliveryBoy->name }}</span>
+                                        </span>
+                                        @if(!in_array($order->order_status, ['DELIVERED', 'CANCELLED']))
+                                            <a href="{{ route('admin.orders.assign_view', ['tab' => 'assigned', 'search' => $order->order_number]) }}" class="text-[10px] text-indigo-600 hover:underline block font-semibold">
+                                                Reassign rider &rarr;
+                                            </a>
+                                        @endif
+                                    </div>
                                 @else
-                                    <a href="{{ route('admin.orders.assign_view') }}" class="px-2 py-0.5 rounded bg-slate-100 hover:bg-slate-200 text-slate-600 text-[10px] font-semibold transition">Assign Fleet</a>
+                                    <a href="{{ route('admin.orders.assign_view', ['tab' => 'unassigned', 'search' => $order->order_number]) }}" class="px-2 py-0.5 rounded bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-bold transition inline-flex items-center space-x-1 border border-emerald-200">
+                                        <i class="fa-solid fa-plus text-[9px]"></i>
+                                        <span>Assign Fleet</span>
+                                    </a>
                                 @endif
                             </td>
                             <td class="py-3.5 px-4 text-right space-x-1">

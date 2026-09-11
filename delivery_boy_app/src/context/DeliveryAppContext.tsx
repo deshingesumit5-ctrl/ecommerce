@@ -126,11 +126,12 @@ export const DeliveryAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
     const baseUrl = customBaseUrl || activeBaseUrlRef.current || getApiBaseUrl();
     try {
       setLoading(true);
+      const boyId = deliveryBoy?.id;
       const [orderRes, notifRes, profileRes] = await Promise.allSettled([
-        axios.get(`${baseUrl}/delivery/orders`, { timeout: 4000 }),
-        axios.get(`${baseUrl}/notifications?app=delivery`, { timeout: 4000 }),
-        deliveryBoy?.id
-          ? axios.get(`${baseUrl}/delivery/profile?id=${deliveryBoy.id}`, { timeout: 4000 })
+        axios.get(`${baseUrl}/delivery/orders${boyId ? `?delivery_boy_id=${boyId}` : ''}`, { timeout: 4000 }),
+        axios.get(`${baseUrl}/notifications?app=delivery${boyId ? `&delivery_boy_id=${boyId}` : ''}`, { timeout: 4000 }),
+        boyId
+          ? axios.get(`${baseUrl}/delivery/profile?id=${boyId}`, { timeout: 4000 })
           : Promise.resolve(null),
       ]);
 

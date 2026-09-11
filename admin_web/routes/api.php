@@ -10,6 +10,7 @@ use App\Models\Order;
 use App\Models\OrderItem;
 use App\Models\DeliveryBoy;
 use App\Models\Customer;
+use App\Models\Coupon;
 use Illuminate\Support\Facades\Hash;
 
 // Helper to add CORS headers
@@ -64,7 +65,7 @@ Route::get('/products', function (Request $request) {
     $query = Product::with(['category', 'subCategory'])
         ->where('status', 'active');
 
-    if ($request->boolean('in_stock_only', true)) {
+    if ($request->has('in_stock_only') && $request->boolean('in_stock_only')) {
         $query->where('in_stock', true);
     }
 
@@ -73,6 +74,10 @@ Route::get('/products', function (Request $request) {
     }
 
     $products = $query->latest()->get()->map(function ($p) {
+        $img = $p->image;
+        if ($img && !str_starts_with($img, 'http://') && !str_starts_with($img, 'https://')) {
+            $img = url($img);
+        }
         return [
             'id' => $p->id,
             'category_id' => $p->category_id,
@@ -84,7 +89,7 @@ Route::get('/products', function (Request $request) {
             'base_price' => (float) $p->base_price,
             'daily_price' => (float) $p->current_daily_price,
             'is_available' => (bool) $p->in_stock,
-            'image_url' => $p->image ?: 'https://images.unsplash.com/photo-1546094096-0df4bcaaa337?w=400',
+            'image_url' => $img ?: 'https://images.unsplash.com/photo-1546094096-0df4bcaaa337?w=400',
         ];
     });
 
@@ -97,11 +102,15 @@ Route::get('/categories', function () {
         ->orderBy('display_order')
         ->get()
         ->map(function ($c) {
+            $img = $c->image;
+            if ($img && !str_starts_with($img, 'http://') && !str_starts_with($img, 'https://')) {
+                $img = url($img);
+            }
             return [
                 'id' => $c->id,
                 'name' => $c->name,
                 'slug' => $c->slug,
-                'image' => $c->image,
+                'image' => $img,
             ];
         });
 
@@ -126,7 +135,132 @@ Route::get('/stores', function () {
     return corsResponse($branches);
 });
 
-// 4. Orders API (Customer App <-> Admin Web <-> DB)
+// 4. Coupons API (Dynamic from Admin Coupon Management)
+Route::get('/coupons', function () {
+    $coupons = Coupon::where('status', 'active')->get()->map(function ($c) {
+        return [
+            'id' => $c->id,
+            'code' => $c->code,
+            'description' => $c->description,
+            'discount_type' => $c->discount_type,
+            'discount_value' => (float) $c->discount_value,
+            'min_order_amount' => (float) $c->min_order_amount,
+            'min_order_value' => (float) $c->min_order_amount,
+            'max_discount_amount' => $c->max_discount_amount ? (float) $c->max_discount_amount : null,
+            'max_discount' => $c->max_discount_amount ? (float) $c->max_discount_amount : null,
+            'usage_limit' => (int) $c->usage_limit,
+            'times_used' => (int) $c->times_used,
+            'start_date' => $c->start_date ? date('Y-m-d', strtotime($c->start_date)) : null,
+            'end_date' => $c->end_date ? date('Y-m-d', strtotime($c->end_date)) : null,
+            'status' => $c->status,
+        ];
+    });
+
+    return corsResponse($coupons);
+});
+
+Route::post('/coupons/apply', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $code = strtoupper(trim((string) ($data['code'] ?? $request->input('code') ?? '')));
+    $subtotal = (float) ($data['subtotal'] ?? $request->input('subtotal') ?? 0);
+
+    if (empty($code)) {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Please enter a coupon code.',
+        ], 200);
+    }
+
+    $coupon = Coupon::whereRaw('UPPER(code) = ?', [$code])->first();
+
+    if (!$coupon || $coupon->status !== 'active') {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Invalid coupon code.',
+        ], 200);
+    }
+
+    // Check expiration date
+    $today = date('Y-m-d');
+    if (!empty($coupon->end_date)) {
+        $endDate = date('Y-m-d', strtotime($coupon->end_date));
+        if ($today > $endDate) {
+            return corsResponse([
+                'success' => false,
+                'message' => 'Coupon validity expired',
+            ], 200);
+        }
+    }
+
+    // Check start date
+    if (!empty($coupon->start_date)) {
+        $startDate = date('Y-m-d', strtotime($coupon->start_date));
+        if ($today < $startDate) {
+            return corsResponse([
+                'success' => false,
+                'message' => 'Coupon is not active yet.',
+            ], 200);
+        }
+    }
+
+    // Check usage limit
+    if ($coupon->usage_limit > 0 && $coupon->times_used >= $coupon->usage_limit) {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Coupon usage limit reached.',
+        ], 200);
+    }
+
+    // Check minimum order amount
+    $minOrder = (float) $coupon->min_order_amount;
+    if ($subtotal < $minOrder) {
+        $formattedMin = number_format($minOrder, 0, '', '');
+        return corsResponse([
+            'success' => false,
+            'message' => "Coupons will apply above {$formattedMin} rs products",
+            'min_order_amount' => $minOrder,
+        ], 200);
+    }
+
+    // Calculate discount
+    $discount = 0;
+    $discVal = (float) $coupon->discount_value;
+    if (strtolower($coupon->discount_type) === 'percentage') {
+        $discount = ($subtotal * $discVal) / 100;
+        if ($coupon->max_discount_amount && $discount > (float) $coupon->max_discount_amount) {
+            $discount = (float) $coupon->max_discount_amount;
+        }
+    } else {
+        $discount = min($subtotal, $discVal);
+    }
+
+    $discount = round($discount, 2);
+
+    return corsResponse([
+        'success' => true,
+        'message' => "Coupon {$coupon->code} applied successfully!",
+        'coupon' => [
+            'id' => $coupon->id,
+            'code' => $coupon->code,
+            'description' => $coupon->description,
+            'discount_type' => $coupon->discount_type,
+            'discount_value' => (float) $coupon->discount_value,
+            'min_order_amount' => (float) $coupon->min_order_amount,
+            'min_order_value' => (float) $coupon->min_order_amount,
+            'max_discount_amount' => $coupon->max_discount_amount ? (float) $coupon->max_discount_amount : null,
+            'max_discount' => $coupon->max_discount_amount ? (float) $coupon->max_discount_amount : null,
+            'start_date' => $coupon->start_date ? date('Y-m-d', strtotime($coupon->start_date)) : null,
+            'end_date' => $coupon->end_date ? date('Y-m-d', strtotime($coupon->end_date)) : null,
+            'status' => $coupon->status,
+        ],
+        'discount' => $discount,
+    ]);
+});
+
+// 5. Orders API (Customer App <-> Admin Web <-> DB)
 Route::get('/orders', function (Request $request) {
     try {
         // Query from customer_app database or admin_web
@@ -235,6 +369,21 @@ Route::post('/orders', function (Request $request) {
         ]);
     } catch (\Throwable $e) {
         // Continue
+    }
+
+    // Increment coupon times_used if applied
+    if (!empty($data['coupon_id']) || !empty($data['coupon_code'])) {
+        try {
+            $couponQuery = Coupon::query();
+            if (!empty($data['coupon_id'])) {
+                $couponQuery->where('id', $data['coupon_id']);
+            } elseif (!empty($data['coupon_code'])) {
+                $couponQuery->whereRaw('UPPER(code) = ?', [strtoupper($data['coupon_code'])]);
+            }
+            $couponQuery->increment('times_used');
+        } catch (\Throwable $e) {
+            // Continue
+        }
     }
 
     // Return the created order
@@ -408,15 +557,22 @@ Route::get('/delivery/profile', function (Request $request) {
 });
 
 // 6. Delivery Boy Orders API (delivery_boy_app <-> DB)
-Route::get('/delivery/orders', function () {
+Route::get('/delivery/orders', function (Request $request) {
     try {
-        $orders = DB::table('delivery_boy_app.assigned_orders')
-            ->orderBy('id', 'desc')
+        $deliveryBoyId = $request->get('delivery_boy_id') ?: $request->get('id');
+        $query = DB::table('delivery_boy_app.assigned_orders');
+
+        if ($deliveryBoyId) {
+            $query->where('delivery_boy_id', $deliveryBoyId);
+        }
+
+        $orders = $query->orderBy('id', 'desc')
             ->get()
             ->map(function ($o) {
                 return [
                     'id' => (string) $o->id,
                     'order_number' => $o->order_number,
+                    'delivery_boy_id' => $o->delivery_boy_id ?? 1,
                     'store_name' => $o->store_name,
                     'customer_name' => $o->customer_name,
                     'customer_mobile' => $o->customer_mobile,
@@ -478,11 +634,43 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
 
         // Notify customer
         DB::table('customer_app.customer_notifications')->insert([
-            'title' => 'Order ' . $status,
+            'title' => 'Order ' . str_replace('_', ' ', $status),
             'message' => 'Your order #' . $orderNumber . ' status is now ' . str_replace('_', ' ', $status) . '.',
             'is_read' => 0,
             'created_at' => now(),
         ]);
+
+        // Sync with admin_web Order model, OrderStatusLog, and Notification
+        try {
+            $order = Order::where('order_number', $orderNumber)->orWhere('id', $orderNumber)->first();
+            if ($order) {
+                $oldStatus = $order->order_status;
+                $order->order_status = $status;
+                if ($status === 'DELIVERED') {
+                    $order->delivered_at = now();
+                    if ($order->payment_mode === 'COD') {
+                        $order->payment_status = 'PAID';
+                    }
+                }
+                $order->save();
+
+                \App\Models\OrderStatusLog::create([
+                    'order_id' => $order->id,
+                    'from_status' => $oldStatus,
+                    'to_status' => $status,
+                    'remarks' => "Order updated to {$status} by delivery partner on mobile app",
+                    'changed_by' => 'Delivery Partner',
+                ]);
+
+                \App\Models\Notification::create([
+                    'type' => 'delivery',
+                    'title' => "Order #{$order->order_number} is {$status}",
+                    'message' => "Delivery partner marked order #{$order->order_number} as {$status}.",
+                    'url' => "/admin/orders/{$order->id}",
+                    'is_read' => false,
+                ]);
+            }
+        } catch (\Throwable $e) {}
 
         return corsResponse(['success' => true, 'status' => $status]);
     } catch (\Throwable $e) {
@@ -493,11 +681,21 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
 // 6. Notifications API
 Route::get('/notifications', function (Request $request) {
     $type = $request->get('app', 'customer');
+    $deliveryBoyId = $request->get('delivery_boy_id') ?: $request->get('id');
+
     try {
         if ($type === 'delivery') {
-            $notifs = DB::table('delivery_boy_app.delivery_notifications')
-                ->orderBy('id', 'desc')
-                ->limit(20)
+            $query = DB::table('delivery_boy_app.delivery_notifications');
+
+            if ($deliveryBoyId) {
+                $query->where(function ($q) use ($deliveryBoyId) {
+                    $q->where('delivery_boy_id', $deliveryBoyId)
+                      ->orWhereNull('delivery_boy_id');
+                });
+            }
+
+            $notifs = $query->orderBy('id', 'desc')
+                ->limit(25)
                 ->get()
                 ->map(function ($n) {
                     return [
@@ -512,7 +710,7 @@ Route::get('/notifications', function (Request $request) {
         } else {
             $notifs = DB::table('customer_app.customer_notifications')
                 ->orderBy('id', 'desc')
-                ->limit(20)
+                ->limit(25)
                 ->get()
                 ->map(function ($n) {
                     return [

@@ -18,6 +18,11 @@ class SettingController extends Controller
     {
         $data = $request->except(['_token', '_method']);
 
+        // Checkbox booleans
+        $data['sms_notifications_enabled'] = $request->has('sms_notifications_enabled') ? '1' : '0';
+        $data['whatsapp_notifications_enabled'] = $request->has('whatsapp_notifications_enabled') ? '1' : '0';
+        $data['auto_assign_orders'] = $request->has('auto_assign_orders') ? '1' : '0';
+
         foreach ($data as $key => $val) {
             Setting::set($key, is_array($val) ? json_encode($val) : $val);
         }

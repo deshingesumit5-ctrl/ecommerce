@@ -1,4 +1,4 @@
-﻿import React, { useState } from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -32,9 +32,9 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
 
   const { subtotal, discount, deliveryCharge, finalAmount } = getCartSummary();
 
-  const handleApplyCoupon = () => {
+  const handleApplyCoupon = async () => {
     if (!couponInput.trim()) return;
-    const res = applyCoupon(couponInput);
+    const res = await applyCoupon(couponInput);
     setCouponMsg({ text: res.message, success: res.success });
     if (res.success) setCouponInput('');
   };
@@ -138,7 +138,7 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
             <View style={styles.couponInputRow}>
               <TextInput
                 style={styles.couponInput}
-                placeholder="Enter Coupon (e.g. FIRST50)"
+                placeholder="Enter Coupon Code (e.g. WELCOME100)"
                 placeholderTextColor="#94a3b8"
                 autoCapitalize="characters"
                 value={couponInput}

@@ -27,8 +27,8 @@ Route::get('/', function () {
 });
 
 // Authentication Routes
-Route::get('/login', [AuthController::class, 'showLogin'])->name('admin.login');
-Route::get('/admin/login', [AuthController::class, 'showLogin']);
+Route::get('/login', [AuthController::class, 'showLogin'])->name('login');
+Route::get('/admin/login', [AuthController::class, 'showLogin'])->name('admin.login');
 Route::post('/login', [AuthController::class, 'login'])->name('admin.login.post');
 Route::post('/logout', [AuthController::class, 'logout'])->name('admin.logout');
 Route::post('/reset-password', [AuthController::class, 'resetPassword'])->name('admin.password.reset');
@@ -95,6 +95,7 @@ Route::prefix('admin')->name('admin.')->middleware(['auth'])->group(function () 
     Route::get('orders/history', [OrderController::class, 'history'])->name('orders.history');
     Route::get('orders/{order}', [OrderController::class, 'show'])->name('orders.show');
     Route::post('orders/{order}/update-status', [OrderController::class, 'updateStatus'])->name('orders.update_status');
+    Route::delete('orders/{order}', [OrderController::class, 'destroy'])->name('orders.destroy');
 
     // 12. Payment Management
     Route::get('payments', [PaymentController::class, 'index'])->name('payments.index');

@@ -25,7 +25,7 @@ class AuthController extends Controller
             'password' => 'required|string',
         ]);
 
-        $remember = $request->has('remember');
+        $remember = $request->has('remember') ? $request->boolean('remember') : true;
 
         if (Auth::attempt(['email' => $request->email, 'password' => $request->password], $remember)) {
             $user = Auth::user();
@@ -46,7 +46,7 @@ class AuthController extends Controller
         $request->session()->invalidate();
         $request->session()->regenerateToken();
 
-        return redirect()->route('admin.login');
+        return redirect()->route('login');
     }
 
     public function resetPassword(Request $request)
