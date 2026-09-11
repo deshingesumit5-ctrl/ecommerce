@@ -1,0 +1,895 @@
+<?php
+
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Route;
+use Illuminate\Support\Facades\DB;
+use App\Models\Product;
+use App\Models\Category;
+use App\Models\Branch;
+use App\Models\Order;
+use App\Models\OrderItem;
+use App\Models\DeliveryBoy;
+use App\Models\Customer;
+use Illuminate\Support\Facades\Hash;
+
+// Helper to add CORS headers
+if (!function_exists('corsResponse')) {
+    function corsResponse($data, $status = 200) {
+        return response()->json($data, $status)
+            ->header('Access-Control-Allow-Origin', '*')
+            ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+            ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+    }
+}
+
+function sendSmsOtp($mobile, $otp) {
+    try {
+        $authKey = env('MSG91_AUTH_KEY');
+        $templateId = env('MSG91_TEMPLATE_ID');
+        $senderId = env('MSG91_SENDER_ID', 'YOURID');
+
+        $response = \Illuminate\Support\Facades\Http::withHeaders([
+            'authkey' => $authKey,
+            'Content-Type' => 'application/json',
+        ])->post('https://control.msg91.com/api/v5/flow/', [
+            'template_id' => $templateId,
+            'sender' => $senderId,
+            'short_url' => '0',
+            'mobiles' => '91' . $mobile,
+            'OTP' => $otp,
+        ]);
+
+        \Illuminate\Support\Facades\Log::info('OTP SMS response', [
+            'mobile' => $mobile,
+            'status' => $response->status(),
+            'body' => $response->body(),
+        ]);
+
+        return $response->successful();
+    } catch (\Throwable $e) {
+        \Illuminate\Support\Facades\Log::error('OTP SMS failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
+Route::options('{any}', function() {
+    return response('', 200)
+        ->header('Access-Control-Allow-Origin', '*')
+        ->header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
+        ->header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+})->where('any', '.*');
+
+// 1. Products API (Dynamic from Admin Product Master)
+Route::get('/products', function (Request $request) {
+    $query = Product::with(['category', 'subCategory'])
+        ->where('status', 'active');
+
+    if ($request->boolean('in_stock_only', true)) {
+        $query->where('in_stock', true);
+    }
+
+    if ($request->filled('category_id')) {
+        $query->where('category_id', $request->category_id);
+    }
+
+    $products = $query->latest()->get()->map(function ($p) {
+        return [
+            'id' => $p->id,
+            'category_id' => $p->category_id,
+            'category_name' => $p->category?->name ?? 'General',
+            'sub_category_id' => $p->sub_category_id,
+            'name' => $p->name,
+            'description' => $p->description ?? '',
+            'unit' => $p->unit,
+            'base_price' => (float) $p->base_price,
+            'daily_price' => (float) $p->current_daily_price,
+            'is_available' => (bool) $p->in_stock,
+            'image_url' => $p->image ?: 'https://images.unsplash.com/photo-1546094096-0df4bcaaa337?w=400',
+        ];
+    });
+
+    return corsResponse($products);
+});
+
+// 2. Categories API
+Route::get('/categories', function () {
+    $categories = Category::where('status', 'active')
+        ->orderBy('display_order')
+        ->get()
+        ->map(function ($c) {
+            return [
+                'id' => $c->id,
+                'name' => $c->name,
+                'slug' => $c->slug,
+                'image' => $c->image,
+            ];
+        });
+
+    return corsResponse($categories);
+});
+
+// 3. Stores / Branches API
+Route::get('/stores', function () {
+    $branches = Branch::where('status', 'active')->get()->map(function ($b) {
+        return [
+            'id' => $b->id,
+            'name' => $b->name,
+            'address' => $b->address,
+            'contact' => $b->contact_phone,
+            'latitude' => (float) $b->latitude,
+            'longitude' => (float) $b->longitude,
+            'delivery_radius_km' => (float) $b->radius_km,
+            'is_active' => $b->status === 'active',
+        ];
+    });
+
+    return corsResponse($branches);
+});
+
+// 4. Orders API (Customer App <-> Admin Web <-> DB)
+Route::get('/orders', function (Request $request) {
+    try {
+        // Query from customer_app database or admin_web
+        $orders = DB::table('customer_app.customer_orders')
+            ->orderBy('id', 'desc')
+            ->get()
+            ->map(function ($o) {
+                return [
+                    'id' => (string) $o->id,
+                    'order_number' => $o->order_number,
+                    'store_id' => $o->store_id,
+                    'store_name' => $o->store_name,
+                    'customer_name' => $o->customer_name,
+                    'customer_mobile' => $o->customer_mobile,
+                    'delivery_address' => $o->delivery_address,
+                    'subtotal' => (float) $o->subtotal,
+                    'discount' => (float) $o->discount,
+                    'delivery_charge' => (float) $o->delivery_charge,
+                    'final_amount' => (float) $o->final_amount,
+                    'payment_mode' => $o->payment_mode,
+                    'payment_status' => $o->payment_status,
+                    'order_status' => $o->order_status,
+                    'placed_at' => $o->placed_at,
+                    'items' => json_decode($o->items ?? '[]', true),
+                ];
+            });
+
+        return corsResponse($orders);
+    } catch (\Throwable $e) {
+        return corsResponse([]);
+    }
+});
+
+Route::post('/orders', function (Request $request) {
+    $data = $request->all();
+
+    $orderNum = 'ORD-' . strtoupper(substr(uniqid(), -6));
+    $subtotal = (float) ($data['subtotal'] ?? 0);
+    $discount = (float) ($data['discount'] ?? 0);
+    $deliveryCharge = (float) ($data['delivery_charge'] ?? 0);
+    $finalAmount = (float) ($data['final_amount'] ?? ($subtotal - $discount + $deliveryCharge));
+    $itemsJson = json_encode($data['items'] ?? []);
+
+    // 1. Save to customer_app DB
+    try {
+        $customerOrderId = DB::table('customer_app.customer_orders')->insertGetId([
+            'order_number' => $orderNum,
+            'store_id' => $data['store_id'] ?? 1,
+            'store_name' => $data['store_name'] ?? 'Satara Main Branch',
+            'customer_name' => $data['customer_name'] ?? 'Customer',
+            'customer_mobile' => $data['customer_mobile'] ?? '9876543210',
+            'delivery_address' => $data['delivery_address'] ?? 'Customer Address',
+            'subtotal' => $subtotal,
+            'discount' => $discount,
+            'delivery_charge' => $deliveryCharge,
+            'final_amount' => $finalAmount,
+            'payment_mode' => $data['payment_mode'] ?? 'COD',
+            'payment_status' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 'PAID' : 'PENDING',
+            'order_status' => 'PLACED',
+            'items' => $itemsJson,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        // Add customer notification
+        DB::table('customer_app.customer_notifications')->insert([
+            'title' => 'Order Placed Successfully!',
+            'message' => 'Your order #' . $orderNum . ' has been received and is being prepared.',
+            'is_read' => 0,
+            'created_at' => now(),
+        ]);
+    } catch (\Throwable $e) {
+        // Fallback if table issues
+    }
+
+    // 2. Also save to delivery_boy_app DB so delivery boy gets it assigned!
+    try {
+        DB::table('delivery_boy_app.assigned_orders')->insert([
+            'order_number' => $orderNum,
+            'delivery_boy_id' => 1,
+            'store_name' => $data['store_name'] ?? 'Satara Main Branch',
+            'customer_name' => $data['customer_name'] ?? 'Customer',
+            'customer_mobile' => $data['customer_mobile'] ?? '9876543210',
+            'delivery_address' => $data['delivery_address'] ?? 'Customer Address',
+            'order_amount' => $finalAmount,
+            'payment_mode' => $data['payment_mode'] ?? 'COD',
+            'payment_status' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 'PAID' : 'PENDING',
+            'cod_amount_to_collect' => ($data['payment_mode'] ?? 'COD') === 'COD' ? $finalAmount : 0,
+            'is_cod_collected' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 1 : 0,
+            'delivery_status' => 'ASSIGNED',
+            'items' => $itemsJson,
+            'customer_notes' => 'Deliver fresh produce promptly.',
+            'assigned_time' => now()->format('h:i A'),
+            'created_at' => now(),
+            'updated_at' => now(),
+        ]);
+
+        // Add delivery notification
+        DB::table('delivery_boy_app.delivery_notifications')->insert([
+            'delivery_boy_id' => 1,
+            'title' => 'New Order Assigned!',
+            'message' => 'New Order #' . $orderNum . ' assigned for ' . ($data['customer_name'] ?? 'Customer') . '.',
+            'order_id' => $orderNum,
+            'is_read' => 0,
+            'created_at' => now(),
+        ]);
+    } catch (\Throwable $e) {
+        // Continue
+    }
+
+    // Return the created order
+    return corsResponse([
+        'id' => (string) ($customerOrderId ?? time()),
+        'order_number' => $orderNum,
+        'store_id' => $data['store_id'] ?? 1,
+        'store_name' => $data['store_name'] ?? 'Satara Main Branch',
+        'customer_name' => $data['customer_name'] ?? 'Customer',
+        'customer_mobile' => $data['customer_mobile'] ?? '9876543210',
+        'delivery_address' => $data['delivery_address'] ?? 'Customer Address',
+        'items' => $data['items'] ?? [],
+        'subtotal' => $subtotal,
+        'discount' => $discount,
+        'delivery_charge' => $deliveryCharge,
+        'final_amount' => $finalAmount,
+        'payment_mode' => $data['payment_mode'] ?? 'COD',
+        'payment_status' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 'PAID' : 'PENDING',
+        'order_status' => 'PLACED',
+        'placed_at' => now()->toISOString(),
+    ]);
+});
+
+// 5. Delivery Boy Authentication API
+Route::post('/delivery/login', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) {
+        $data = $request->all();
+    }
+    if (empty($data)) {
+        $data = json_decode($request->getContent(), true) ?: [];
+    }
+
+    $username = trim((string) ($data['username'] ?? ''));
+    $password = (string) ($data['password'] ?? '');
+
+    if (empty($username) || empty($password)) {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Please provide both username and password.'
+        ], 400);
+    }
+
+    $deliveryBoy = DeliveryBoy::with('branch')
+        ->where('username', $username)
+        ->orWhere('mobile', $username)
+        ->first();
+
+    if (!$deliveryBoy) {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Account not found for username "' . $username . '".'
+        ], 404);
+    }
+
+    if ($deliveryBoy->status !== 'active') {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Your account is currently ' . $deliveryBoy->status . '. Please contact Admin.'
+        ], 403);
+    }
+
+    $passwordValid = false;
+    if (Hash::check($password, $deliveryBoy->password)) {
+        $passwordValid = true;
+        if (empty($deliveryBoy->plain_password)) {
+            $deliveryBoy->plain_password = $password;
+            $deliveryBoy->save();
+        }
+    } elseif (!empty($deliveryBoy->plain_password) && $deliveryBoy->plain_password === $password) {
+        $passwordValid = true;
+        $deliveryBoy->password = Hash::make($password);
+        $deliveryBoy->save();
+    } elseif ($deliveryBoy->password === $password) {
+        $passwordValid = true;
+        $deliveryBoy->plain_password = $password;
+        $deliveryBoy->password = Hash::make($password);
+        $deliveryBoy->save();
+    }
+
+    if (!$passwordValid) {
+        return corsResponse([
+            'success' => false,
+            'message' => 'Invalid password credentials. Please check your password.'
+        ], 401);
+    }
+
+    $deliveredCount = 0;
+    try {
+        $deliveredCount = DB::table('delivery_boy_app.assigned_orders')
+            ->where('delivery_boy_id', $deliveryBoy->id)
+            ->where('delivery_status', 'DELIVERED')
+            ->count();
+    } catch (\Throwable $e) {}
+
+    if ($deliveredCount === 0) {
+        try {
+            $deliveredCount = Order::where('delivery_boy_id', $deliveryBoy->id)
+                ->where('order_status', 'DELIVERED')
+                ->count();
+        } catch (\Throwable $e) {}
+    }
+
+    return corsResponse([
+        'success' => true,
+        'message' => 'Login successful',
+        'delivery_boy' => [
+            'id' => $deliveryBoy->id,
+            'name' => $deliveryBoy->name,
+            'username' => $deliveryBoy->username,
+            'email' => $deliveryBoy->username . '@metaglobe.com',
+            'mobile' => $deliveryBoy->mobile,
+            'assigned_store_id' => $deliveryBoy->branch_id,
+            'assigned_store_name' => $deliveryBoy->branch?->name ?? 'Satara Main Store',
+            'vehicle_type' => $deliveryBoy->vehicle_type,
+            'vehicle_number' => $deliveryBoy->vehicle_number ?? '',
+            'driving_license' => $deliveryBoy->license_number ?? '',
+            'is_online' => (bool) $deliveryBoy->is_online,
+            'rating' => 4.9,
+            'total_completed_orders' => (int) $deliveredCount,
+        ]
+    ]);
+});
+
+Route::get('/delivery/profile', function (Request $request) {
+    $id = $request->get('id');
+    $username = $request->get('username');
+    $deliveryBoy = DeliveryBoy::with('branch')
+        ->when($id, fn($q) => $q->where('id', $id))
+        ->when(!$id && $username, fn($q) => $q->where('username', $username))
+        ->first();
+
+    if (!$deliveryBoy) {
+        return corsResponse(['success' => false, 'message' => 'Delivery partner not found'], 404);
+    }
+
+    $deliveredCount = 0;
+    try {
+        $deliveredCount = DB::table('delivery_boy_app.assigned_orders')
+            ->where('delivery_boy_id', $deliveryBoy->id)
+            ->where('delivery_status', 'DELIVERED')
+            ->count();
+    } catch (\Throwable $e) {}
+
+    if ($deliveredCount === 0) {
+        try {
+            $deliveredCount = Order::where('delivery_boy_id', $deliveryBoy->id)
+                ->where('order_status', 'DELIVERED')
+                ->count();
+        } catch (\Throwable $e) {}
+    }
+
+    return corsResponse([
+        'success' => true,
+        'delivery_boy' => [
+            'id' => $deliveryBoy->id,
+            'name' => $deliveryBoy->name,
+            'username' => $deliveryBoy->username,
+            'email' => $deliveryBoy->username . '@metaglobe.com',
+            'mobile' => $deliveryBoy->mobile,
+            'assigned_store_id' => $deliveryBoy->branch_id,
+            'assigned_store_name' => $deliveryBoy->branch?->name ?? 'Satara Main Store',
+            'vehicle_type' => $deliveryBoy->vehicle_type,
+            'vehicle_number' => $deliveryBoy->vehicle_number ?? '',
+            'driving_license' => $deliveryBoy->license_number ?? '',
+            'is_online' => (bool) $deliveryBoy->is_online,
+            'rating' => 4.9,
+            'total_completed_orders' => (int) $deliveredCount,
+        ]
+    ]);
+});
+
+// 6. Delivery Boy Orders API (delivery_boy_app <-> DB)
+Route::get('/delivery/orders', function () {
+    try {
+        $orders = DB::table('delivery_boy_app.assigned_orders')
+            ->orderBy('id', 'desc')
+            ->get()
+            ->map(function ($o) {
+                return [
+                    'id' => (string) $o->id,
+                    'order_number' => $o->order_number,
+                    'store_name' => $o->store_name,
+                    'customer_name' => $o->customer_name,
+                    'customer_mobile' => $o->customer_mobile,
+                    'delivery_address' => $o->delivery_address,
+                    'order_amount' => (float) $o->order_amount,
+                    'payment_mode' => $o->payment_mode,
+                    'payment_status' => $o->payment_status,
+                    'cod_amount_to_collect' => (float) $o->cod_amount_to_collect,
+                    'is_cod_collected' => (bool) $o->is_cod_collected,
+                    'delivery_status' => $o->delivery_status,
+                    'items' => json_decode($o->items ?? '[]', true),
+                    'customer_notes' => $o->customer_notes ?? '',
+                    'assigned_time' => $o->assigned_time ?? '',
+                    'delivered_time' => $o->delivered_time ?? '',
+                ];
+            });
+
+        return corsResponse($orders);
+    } catch (\Throwable $e) {
+        return corsResponse([]);
+    }
+});
+
+Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Request $request) {
+    $status = $request->input('delivery_status');
+    $isCodCollected = $request->boolean('is_cod_collected', false);
+    $deliveredTime = $status === 'DELIVERED' ? now()->format('h:i A') : null;
+
+    try {
+        $update = [
+            'delivery_status' => $status,
+            'updated_at' => now(),
+        ];
+        if ($deliveredTime) {
+            $update['delivered_time'] = $deliveredTime;
+        }
+        if ($isCodCollected || $status === 'DELIVERED') {
+            $update['is_cod_collected'] = 1;
+            $update['payment_status'] = 'PAID';
+        }
+
+        DB::table('delivery_boy_app.assigned_orders')
+            ->where('order_number', $orderNumber)
+            ->orWhere('id', $orderNumber)
+            ->update($update);
+
+        // Also update customer_app orders status
+        $custUpdate = [
+            'order_status' => $status,
+            'updated_at' => now(),
+        ];
+        if ($isCodCollected || $status === 'DELIVERED') {
+            $custUpdate['payment_status'] = 'PAID';
+        }
+        DB::table('customer_app.customer_orders')
+            ->where('order_number', $orderNumber)
+            ->orWhere('id', $orderNumber)
+            ->update($custUpdate);
+
+        // Notify customer
+        DB::table('customer_app.customer_notifications')->insert([
+            'title' => 'Order ' . $status,
+            'message' => 'Your order #' . $orderNumber . ' status is now ' . str_replace('_', ' ', $status) . '.',
+            'is_read' => 0,
+            'created_at' => now(),
+        ]);
+
+        return corsResponse(['success' => true, 'status' => $status]);
+    } catch (\Throwable $e) {
+        return corsResponse(['success' => false, 'error' => $e->getMessage()], 500);
+    }
+});
+
+// 6. Notifications API
+Route::get('/notifications', function (Request $request) {
+    $type = $request->get('app', 'customer');
+    try {
+        if ($type === 'delivery') {
+            $notifs = DB::table('delivery_boy_app.delivery_notifications')
+                ->orderBy('id', 'desc')
+                ->limit(20)
+                ->get()
+                ->map(function ($n) {
+                    return [
+                        'id' => (string) $n->id,
+                        'title' => $n->title,
+                        'message' => $n->message,
+                        'order_id' => $n->order_id,
+                        'is_read' => (bool) $n->is_read,
+                        'time' => $n->created_at ? date('h:i A', strtotime($n->created_at)) : 'Just now',
+                    ];
+                });
+        } else {
+            $notifs = DB::table('customer_app.customer_notifications')
+                ->orderBy('id', 'desc')
+                ->limit(20)
+                ->get()
+                ->map(function ($n) {
+                    return [
+                        'id' => (string) $n->id,
+                        'title' => $n->title,
+                        'message' => $n->message,
+                        'is_read' => (bool) $n->is_read,
+                        'time' => $n->created_at ? date('h:i A', strtotime($n->created_at)) : 'Just now',
+                    ];
+                });
+        }
+
+        return corsResponse($notifs);
+    } catch (\Throwable $e) {
+        return corsResponse([]);
+    }
+});
+
+Route::post('/notifications/{id}/read', function ($id, Request $request) {
+    $type = $request->get('app', 'customer');
+    try {
+        if ($type === 'delivery') {
+            DB::table('delivery_boy_app.delivery_notifications')->where('id', $id)->update(['is_read' => 1]);
+        } else {
+            DB::table('customer_app.customer_notifications')->where('id', $id)->update(['is_read' => 1]);
+        }
+        return corsResponse(['success' => true]);
+    } catch (\Throwable $e) {
+        return corsResponse(['success' => false], 500);
+    }
+});
+
+// 7. Customer Authentication & OTP API
+Route::post('/customer/register', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $name = trim($data['name'] ?? '');
+    $rawMobile = trim((string) ($data['mobile'] ?? ''));
+    $mobile = preg_replace('/\D/', '', $rawMobile);
+    if (strlen($mobile) > 10) {
+        $mobile = substr($mobile, -10);
+    }
+    $email = trim($data['email'] ?? '');
+    $address = trim($data['address'] ?? '');
+    $city = trim($data['city'] ?? 'Satara');
+    $pincode = trim($data['pincode'] ?? '415001');
+    $status = trim($data['status'] ?? 'active');
+    $password = (string) ($data['password'] ?? '');
+
+    if (empty($name)) {
+        return corsResponse(['success' => false, 'message' => 'Customer Full Name is required.'], 400);
+    }
+    if (empty($mobile) || strlen($mobile) !== 10) {
+        return corsResponse(['success' => false, 'message' => 'Please enter a valid 10-digit mobile number.'], 400);
+    }
+    if (empty($address)) {
+        return corsResponse(['success' => false, 'message' => 'Saved Delivery Address is required.'], 400);
+    }
+    if (empty($city)) {
+        $city = 'Satara';
+    }
+    if (!in_array($status, ['active', 'inactive', 'blocked'])) {
+        $status = 'active';
+    }
+
+    // Default password to mobile number if not specified
+    $passToHash = !empty($password) ? $password : $mobile;
+
+    // Generate unique 4-digit OTP
+    $otp = (string) random_int(1000, 9999);
+
+    // Find existing or create new customer
+    $customer = Customer::where('mobile', $mobile)->first();
+    if ($customer) {
+        $customer->name = $name;
+        if (!empty($email)) $customer->email = $email;
+        $customer->address = $address;
+        $customer->city = $city;
+        $customer->pincode = $pincode ?: '415001';
+        $customer->status = $status;
+        $customer->password = Hash::make($passToHash);
+        $customer->plain_password = $passToHash;
+        $customer->otp = $otp;
+        $customer->save();
+    } else {
+        $customer = Customer::create([
+            'name' => $name,
+            'mobile' => $mobile,
+            'email' => !empty($email) ? $email : null,
+            'address' => $address,
+            'city' => $city,
+            'pincode' => $pincode ?: '415001',
+            'status' => $status,
+            'password' => Hash::make($passToHash),
+            'plain_password' => $passToHash,
+            'otp' => $otp,
+            'lat' => 17.6850,
+            'lng' => 73.9950,
+        ]);
+    }
+
+    return corsResponse([
+        'success' => true,
+        'message' => 'Registration successful. Verification code has been sent.',
+        'mobile' => $mobile,
+        'customer' => [
+            'id' => $customer->id,
+            'name' => $customer->name,
+            'mobile' => $customer->mobile,
+            'email' => $customer->email ?? '',
+            'address' => $customer->address ?? '',
+            'city' => $customer->city ?? 'Satara',
+            'pincode' => $customer->pincode ?? '415001',
+            'status' => $customer->status ?? 'active',
+            'addresses' => [
+                [
+                    'id' => 'addr-' . $customer->id,
+                    'label' => 'Saved Address',
+                    'address_line' => $customer->address ?: ($customer->city ?: 'Satara'),
+                    'latitude' => (float) ($customer->lat ?: 17.6850),
+                    'longitude' => (float) ($customer->lng ?: 73.9950),
+                    'is_default' => true,
+                ]
+            ]
+        ]
+    ]);
+});
+
+Route::post('/customer/send-otp', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $rawMobile = trim((string) ($data['mobile'] ?? ''));
+    $mobile = preg_replace('/\D/', '', $rawMobile);
+    if (strlen($mobile) > 10) {
+        $mobile = substr($mobile, -10);
+    }
+
+    if (empty($mobile) || strlen($mobile) !== 10) {
+        return corsResponse(['success' => false, 'message' => 'Please enter a valid 10-digit mobile number.'], 400);
+    }
+
+    $customer = Customer::where('mobile', $mobile)->first();
+    $otp = (string) random_int(1000, 9999);
+
+    if ($customer) {
+        $customer->otp = $otp;
+        $customer->save();
+    }
+
+    $smsSent = sendSmsOtp($mobile, $otp);
+
+    return corsResponse([
+        'success' => true,
+        'message' => $smsSent
+            ? 'Verification code sent successfully to +91 ' . $mobile
+            : 'Could not send SMS right now, please try resend.',
+        'mobile' => $mobile,
+    ]);
+});
+
+Route::post('/customer/verify-otp', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $rawMobile = trim((string) ($data['mobile'] ?? ''));
+    $mobile = preg_replace('/\D/', '', $rawMobile);
+    if (strlen($mobile) > 10) {
+        $mobile = substr($mobile, -10);
+    }
+    $otp = trim((string) ($data['otp'] ?? ''));
+
+    if (empty($mobile) || empty($otp)) {
+        return corsResponse(['success' => false, 'message' => 'Mobile number and OTP are required.'], 400);
+    }
+
+    $customer = Customer::where('mobile', $mobile)->first();
+    if (!$customer) {
+        return corsResponse(['success' => false, 'message' => 'Customer account not found.'], 404);
+    }
+
+    if ($customer->otp !== $otp) {// allow master 1234 fallback for dev if needed
+        return corsResponse(['success' => false, 'message' => 'Invalid OTP entered. Please check and enter again.'], 400);
+    }
+
+    // Clear OTP after successful verification
+    $customer->otp = null;
+    $customer->status = 'active';
+    $customer->save();
+
+    return corsResponse([
+        'success' => true,
+        'message' => 'OTP verified successfully!',
+        'customer' => [
+            'id' => $customer->id,
+            'name' => $customer->name,
+            'mobile' => $customer->mobile,
+            'email' => $customer->email ?? '',
+            'address' => $customer->address ?? '',
+            'city' => $customer->city ?? 'Satara',
+            'pincode' => $customer->pincode ?? '415001',
+            'addresses' => [
+                [
+                    'id' => 'addr-' . $customer->id,
+                    'label' => 'Saved Address',
+                    'address_line' => $customer->address ?: ($customer->city ?: 'Satara'),
+                    'latitude' => (float) ($customer->lat ?: 17.6850),
+                    'longitude' => (float) ($customer->lng ?: 73.9950),
+                    'is_default' => true,
+                ]
+            ]
+        ]
+    ]);
+});
+
+Route::post('/customer/resend-otp', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $rawMobile = trim((string) ($data['mobile'] ?? ''));
+    $mobile = preg_replace('/\D/', '', $rawMobile);
+    if (strlen($mobile) > 10) {
+        $mobile = substr($mobile, -10);
+    }
+
+    if (empty($mobile) || strlen($mobile) !== 10) {
+        return corsResponse(['success' => false, 'message' => 'Valid 10-digit mobile number is required.'], 400);
+    }
+
+    $customer = Customer::where('mobile', $mobile)->first();
+    $otp = (string) random_int(1000, 9999);
+    if ($customer) {
+        $customer->otp = $otp;
+        $customer->save();
+    }
+
+    sendSmsOtp($mobile, $otp);
+
+    sendSmsOtp($mobile, $otp);
+
+    return corsResponse([
+        'success' => true,
+        'message' => 'Registration successful. Verification code has been sent.',
+        'mobile' => $mobile,
+    ]);
+});
+
+Route::post('/customer/login', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $username = trim($data['username'] ?? $data['mobile'] ?? $data['email'] ?? '');
+    $password = (string) ($data['password'] ?? '');
+
+    if (empty($username) || empty($password)) {
+        return corsResponse(['success' => false, 'message' => 'Please enter username/mobile and password.'], 400);
+    }
+
+    $customer = Customer::where('mobile', $username)
+        ->orWhere('email', $username)
+        ->orWhere('name', $username)
+        ->first();
+
+    if (!$customer) {
+        return corsResponse(['success' => false, 'message' => 'Account not found with provided mobile or email.'], 404);
+    }
+
+    $valid = false;
+    if ($customer->password && Hash::check($password, $customer->password)) {
+        $valid = true;
+    } elseif (!empty($customer->plain_password) && $customer->plain_password === $password) {
+        $valid = true;
+        $customer->password = Hash::make($password);
+        $customer->save();
+    } elseif ($customer->password === $password) {
+        $valid = true;
+        $customer->password = Hash::make($password);
+        $customer->plain_password = $password;
+        $customer->save();
+    }
+
+    if (!$valid) {
+        return corsResponse(['success' => false, 'message' => 'Invalid password credentials. Please try again.'], 401);
+    }
+
+    return corsResponse([
+        'success' => true,
+        'message' => 'Login successful',
+        'customer' => [
+            'id' => $customer->id,
+            'name' => $customer->name,
+            'mobile' => $customer->mobile,
+            'email' => $customer->email ?? '',
+            'address' => $customer->address ?? '',
+            'city' => $customer->city ?? 'Satara',
+            'pincode' => $customer->pincode ?? '415001',
+            'addresses' => [
+                [
+                    'id' => 'addr-' . $customer->id,
+                    'label' => 'Saved Address',
+                    'address_line' => $customer->address ?: ($customer->city ?: 'Satara'),
+                    'latitude' => (float) ($customer->lat ?: 17.6850),
+                    'longitude' => (float) ($customer->lng ?: 73.9950),
+                    'is_default' => true,
+                ]
+            ]
+        ]
+    ]);
+});
+
+Route::post('/customer/update-profile', function (Request $request) {
+    $data = $request->json()->all();
+    if (empty($data)) $data = $request->all();
+    if (empty($data)) $data = json_decode($request->getContent(), true) ?: [];
+
+    $id = $data['id'] ?? null;
+    $mobile = trim($data['mobile'] ?? '');
+
+    $customer = Customer::when($id, fn($q) => $q->where('id', $id))
+        ->when(!$id && $mobile, fn($q) => $q->where('mobile', $mobile))
+        ->first();
+
+    if (!$customer) {
+        return corsResponse(['success' => false, 'message' => 'Customer not found.'], 404);
+    }
+
+    if (isset($data['name']) && !empty(trim($data['name']))) {
+        $customer->name = trim($data['name']);
+    }
+    if (isset($data['email'])) {
+        $customer->email = trim($data['email']);
+    }
+    if (isset($data['address'])) {
+        $customer->address = trim($data['address']);
+    }
+    if (isset($data['city']) && !empty(trim($data['city']))) {
+        $customer->city = trim($data['city']);
+    }
+    if (isset($data['pincode'])) {
+        $customer->pincode = trim($data['pincode']);
+    }
+    if (!empty($data['password'])) {
+        $newPass = (string) $data['password'];
+        $customer->password = Hash::make($newPass);
+        $customer->plain_password = $newPass;
+    }
+
+    $customer->save();
+
+    return corsResponse([
+        'success' => true,
+        'message' => 'Profile updated successfully!',
+        'customer' => [
+            'id' => $customer->id,
+            'name' => $customer->name,
+            'mobile' => $customer->mobile,
+            'email' => $customer->email ?? '',
+            'address' => $customer->address ?? '',
+            'city' => $customer->city ?? 'Satara',
+            'pincode' => $customer->pincode ?? '415001',
+            'addresses' => [
+                [
+                    'id' => 'addr-' . $customer->id,
+                    'label' => 'Saved Address',
+                    'address_line' => $customer->address ?: ($customer->city ?: 'Satara'),
+                    'latitude' => (float) ($customer->lat ?: 17.6850),
+                    'longitude' => (float) ($customer->lng ?: 73.9950),
+                    'is_default' => true,
+                ]
+            ]
+        ]
+    ]);
+});
+

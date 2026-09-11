@@ -1,0 +1,43 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Environment files
+.env
+.env.backup
+.env.production
+.env*.local
+
+# Expo / React Native
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+*.tsbuildinfo
+/ios
+/android
+
+# Laravel storage & cache
+/admin_web/storage/*.key
+/admin_web/storage/pail
+/admin_web/public/storage
+/admin_web/public/build
+/admin_web/public/hot
+.phpunit.result.cache
+.phpunit.cache
+
+# Logs & Debug
+*.log
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.fleet/
+.nova/
+.zed/
+.claude/
