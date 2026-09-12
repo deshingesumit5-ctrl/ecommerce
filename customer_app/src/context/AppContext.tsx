@@ -36,8 +36,8 @@ export const getDetectedHost = (): string => {
 
   return '192.168.1.2';
 };
-
-const API_BASE_URL = `http://${getDetectedHost()}:8000/api`;
+// Live AWS EC2 Backend API
+const API_BASE_URL = 'http://13.60.31.32/api';
 
 interface AppContextType {
   customer: Customer | null;
