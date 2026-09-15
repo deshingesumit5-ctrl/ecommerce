@@ -261,10 +261,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       }
       if (orderRes.status === 'fulfilled' && Array.isArray(orderRes.value.data)) {
-        setOrders(orderRes.value.data);
-        AsyncStorage.setItem('cached_orders', JSON.stringify(orderRes.value.data)).catch(() => {});
-        if (orderRes.value.data.length > 0 && !activeOrder) {
-          setActiveOrder(orderRes.value.data[0]);
+        const freshOrders = orderRes.value.data;
+        setOrders(freshOrders);
+        AsyncStorage.setItem('cached_orders', JSON.stringify(freshOrders)).catch(() => {});
+        if (freshOrders.length > 0) {
+          setActiveOrder((current) => {
+            if (!current) return freshOrders[0];
+            const updated = freshOrders.find((o: Order) => o.id === current.id || o.order_number === current.order_number);
+            return updated || freshOrders[0];
+          });
         }
       }
       if (notifRes.status === 'fulfilled' && Array.isArray(notifRes.value.data)) {

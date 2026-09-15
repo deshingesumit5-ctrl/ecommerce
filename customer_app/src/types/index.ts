@@ -1,6 +1,6 @@
 export type PaymentMode = 'ONLINE' | 'COD';
 export type PaymentStatus = 'PENDING' | 'PAID' | 'FAILED';
-export type OrderStatus = 'PLACED' | 'CONFIRMED' | 'PACKED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED';
+export type OrderStatus = 'PLACED' | 'CONFIRMED' | 'PACKED' | 'ASSIGNED' | 'OUT_FOR_DELIVERY' | 'DELIVERED' | 'CANCELLED';
 
 export interface Store {
   id: number;

@@ -136,6 +136,22 @@ class OrderController extends Controller
         // Sync with delivery_boy_app & customer_app
         if ($deliveryBoy) {
             $this->syncToDeliveryAndCustomerApp($order, $deliveryBoy, $isReassignment, $previousDeliveryBoyId);
+        } else {
+            try {
+                DB::table('customer_app.customer_orders')
+                    ->where('order_number', $order->order_number)
+                    ->update([
+                        'order_status' => $order->order_status,
+                        'updated_at' => now(),
+                    ]);
+
+                DB::table('customer_app.customer_notifications')->insert([
+                    'title' => 'Order ' . str_replace('_', ' ', $order->order_status),
+                    'message' => "Your order #{$order->order_number} status is now " . str_replace('_', ' ', $order->order_status) . ".",
+                    'is_read' => 0,
+                    'created_at' => now(),
+                ]);
+            } catch (\Throwable $e) {}
         }
 
         return redirect()->back()->with('success', "Order #{$order->order_number} updated to {$newStatus}!");

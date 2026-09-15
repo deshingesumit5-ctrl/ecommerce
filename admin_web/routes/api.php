@@ -263,8 +263,43 @@ Route::post('/coupons/apply', function (Request $request) {
 // 5. Orders API (Customer App <-> Admin Web <-> DB)
 Route::get('/orders', function (Request $request) {
     try {
-        // Query from customer_app database or admin_web
-        $orders = DB::table('customer_app.customer_orders')
+        // Query from main admin_web orders table with full relations
+        $adminOrders = Order::with(['customer', 'branch', 'items'])->latest('id')->get();
+
+        if ($adminOrders->isNotEmpty()) {
+            $orders = $adminOrders->map(function ($o) {
+                return [
+                    'id' => (string) $o->id,
+                    'order_number' => $o->order_number,
+                    'store_id' => $o->branch_id,
+                    'store_name' => $o->branch?->name ?? 'Satara Main Branch',
+                    'customer_name' => $o->customer?->name ?? 'Customer',
+                    'customer_mobile' => $o->customer?->mobile ?? '9876543210',
+                    'delivery_address' => $o->delivery_address,
+                    'subtotal' => (float) $o->subtotal,
+                    'discount' => (float) $o->discount_amount,
+                    'delivery_charge' => (float) $o->delivery_charge,
+                    'final_amount' => (float) $o->total_amount,
+                    'payment_mode' => $o->payment_mode,
+                    'payment_status' => $o->payment_status,
+                    'order_status' => $o->order_status,
+                    'placed_at' => $o->placed_at ? $o->placed_at->toISOString() : now()->toISOString(),
+                    'items' => $o->items->map(function ($item) {
+                        return [
+                            'product_id' => $item->product_id,
+                            'product_name' => $item->product_name,
+                            'unit_price' => (float) $item->price,
+                            'quantity' => (int) $item->quantity,
+                            'total_price' => (float) $item->total,
+                        ];
+                    })->values()->all(),
+                ];
+            });
+            return corsResponse($orders);
+        }
+
+        // Fallback to customer_app database if admin_web orders is empty
+        $customerOrders = DB::table('customer_app.customer_orders')
             ->orderBy('id', 'desc')
             ->get()
             ->map(function ($o) {
@@ -288,7 +323,7 @@ Route::get('/orders', function (Request $request) {
                 ];
             });
 
-        return corsResponse($orders);
+        return corsResponse($customerOrders);
     } catch (\Throwable $e) {
         return corsResponse([]);
     }
@@ -302,23 +337,155 @@ Route::post('/orders', function (Request $request) {
     $discount = (float) ($data['discount'] ?? 0);
     $deliveryCharge = (float) ($data['delivery_charge'] ?? 0);
     $finalAmount = (float) ($data['final_amount'] ?? ($subtotal - $discount + $deliveryCharge));
-    $itemsJson = json_encode($data['items'] ?? []);
+    $rawMobile = trim((string) ($data['customer_mobile'] ?? '9876543210'));
+    $mobile = preg_replace('/\D/', '', $rawMobile);
+    if (strlen($mobile) > 10) {
+        $mobile = substr($mobile, -10);
+    }
+    if (empty($mobile)) {
+        $mobile = '9876543210';
+    }
+    $custName = trim((string) ($data['customer_name'] ?? 'Customer'));
+    $deliveryAddress = trim((string) ($data['delivery_address'] ?? 'Customer Delivery Address'));
+    $paymentMode = in_array(strtoupper($data['payment_mode'] ?? 'COD'), ['COD', 'ONLINE']) ? strtoupper($data['payment_mode']) : 'COD';
+    $paymentStatus = $paymentMode === 'ONLINE' ? 'PAID' : 'PENDING';
+    $storeId = (int) ($data['store_id'] ?? 1);
 
-    // 1. Save to customer_app DB
+    // 1. Resolve or find Branch (Store)
+    $branch = Branch::find($storeId);
+    if (!$branch) {
+        $branch = Branch::where('status', 'active')->first() ?: Branch::first();
+    }
+    $branchId = $branch ? $branch->id : 1;
+    $branchName = $branch ? $branch->name : 'Satara Main Branch';
+
+    // 2. Find or create Customer in admin_web.customers
+    $customer = Customer::where('mobile', $mobile)->first();
+    if (!$customer) {
+        try {
+            $customer = Customer::create([
+                'name' => $custName,
+                'mobile' => $mobile,
+                'address' => $deliveryAddress,
+                'city' => 'Satara',
+                'status' => 'active',
+                'password' => Hash::make($mobile),
+                'plain_password' => $mobile,
+            ]);
+        } catch (\Throwable $e) {
+            $customer = Customer::first();
+        }
+    } else {
+        if (!empty($deliveryAddress) && empty($customer->address)) {
+            $customer->address = $deliveryAddress;
+            $customer->save();
+        }
+    }
+    $customerId = $customer ? $customer->id : 1;
+
+    // 3. Resolve Coupon if applied
+    $couponId = null;
+    if (!empty($data['coupon_id'])) {
+        $couponId = $data['coupon_id'];
+    } elseif (!empty($data['coupon_code'])) {
+        $cObj = Coupon::whereRaw('UPPER(code) = ?', [strtoupper(trim($data['coupon_code']))])->first();
+        if ($cObj) {
+            $couponId = $cObj->id;
+        }
+    }
+
+    // 4. Save to main admin_web.orders table (Status = PLACED, delivery_boy_id = NULL)
+    $order = null;
+    try {
+        $order = Order::create([
+            'order_number' => $orderNum,
+            'branch_id' => $branchId,
+            'customer_id' => $customerId,
+            'delivery_boy_id' => null, // Unassigned: Admin will assign within 3km radius
+            'coupon_id' => $couponId,
+            'subtotal' => $subtotal,
+            'discount_amount' => $discount,
+            'delivery_charge' => $deliveryCharge,
+            'tax_amount' => 0.00,
+            'total_amount' => $finalAmount,
+            'payment_mode' => $paymentMode,
+            'payment_status' => $paymentStatus,
+            'order_status' => 'PLACED',
+            'delivery_address' => $deliveryAddress,
+            'placed_at' => now(),
+        ]);
+
+        // Save order items in admin_web.order_items
+        $itemsData = $data['items'] ?? [];
+        if (is_array($itemsData)) {
+            $firstProduct = Product::first();
+            $defaultProductId = $firstProduct ? $firstProduct->id : null;
+            foreach ($itemsData as $item) {
+                $rawPId = $item['product_id'] ?? null;
+                $pId = ($rawPId && Product::where('id', $rawPId)->exists()) ? $rawPId : $defaultProductId;
+                if ($pId) {
+                    OrderItem::create([
+                        'order_id' => $order->id,
+                        'product_id' => $pId,
+                        'product_name' => $item['product_name'] ?? 'Item',
+                        'unit' => $item['unit'] ?? 'kg',
+                        'price' => (float) ($item['unit_price'] ?? 0),
+                        'quantity' => (int) ($item['quantity'] ?? 1),
+                        'total' => (float) ($item['total_price'] ?? (($item['unit_price'] ?? 0) * ($item['quantity'] ?? 1))),
+                    ]);
+                }
+            }
+        }
+
+        // Save initial status log in admin_web.order_status_logs
+        \App\Models\OrderStatusLog::create([
+            'order_id' => $order->id,
+            'from_status' => null,
+            'to_status' => 'PLACED',
+            'remarks' => 'Order placed online by customer via Customer App. Awaiting 3KM fleet assignment.',
+            'changed_by' => 'Customer',
+        ]);
+
+        // Create Admin Notification in admin_web.notifications
+        \App\Models\Notification::create([
+            'type' => 'order',
+            'title' => "New Order #{$orderNum} Placed!",
+            'message' => "Customer {$custName} ({$mobile}) placed order #{$orderNum} worth ₹" . number_format($finalAmount, 2) . " at {$branchName}. Ready for 3KM fleet dispatch.",
+            'url' => "/admin/orders/{$order->id}",
+            'is_read' => false,
+        ]);
+
+        // If online payment, record in payments table
+        if ($paymentMode === 'ONLINE') {
+            \App\Models\Payment::create([
+                'order_id' => $order->id,
+                'transaction_id' => 'TXN-ONL-' . rand(100000, 999999),
+                'payment_mode' => 'ONLINE',
+                'amount' => $finalAmount,
+                'status' => 'SUCCESS',
+                'collected_at' => now(),
+            ]);
+        }
+    } catch (\Throwable $e) {
+        \Illuminate\Support\Facades\Log::error('Order creation error in admin_web.orders: ' . $e->getMessage());
+    }
+
+    // 5. Also sync to customer_app database
+    $itemsJson = json_encode($data['items'] ?? []);
     try {
         $customerOrderId = DB::table('customer_app.customer_orders')->insertGetId([
             'order_number' => $orderNum,
-            'store_id' => $data['store_id'] ?? 1,
-            'store_name' => $data['store_name'] ?? 'Satara Main Branch',
-            'customer_name' => $data['customer_name'] ?? 'Customer',
-            'customer_mobile' => $data['customer_mobile'] ?? '9876543210',
-            'delivery_address' => $data['delivery_address'] ?? 'Customer Address',
+            'store_id' => $branchId,
+            'store_name' => $branchName,
+            'customer_name' => $custName,
+            'customer_mobile' => $mobile,
+            'delivery_address' => $deliveryAddress,
             'subtotal' => $subtotal,
             'discount' => $discount,
             'delivery_charge' => $deliveryCharge,
             'final_amount' => $finalAmount,
-            'payment_mode' => $data['payment_mode'] ?? 'COD',
-            'payment_status' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 'PAID' : 'PENDING',
+            'payment_mode' => $paymentMode,
+            'payment_status' => $paymentStatus,
             'order_status' => 'PLACED',
             'items' => $itemsJson,
             'created_at' => now(),
@@ -328,7 +495,7 @@ Route::post('/orders', function (Request $request) {
         // Add customer notification
         DB::table('customer_app.customer_notifications')->insert([
             'title' => 'Order Placed Successfully!',
-            'message' => 'Your order #' . $orderNum . ' has been received and is being prepared.',
+            'message' => 'Your order #' . $orderNum . ' has been received and is being prepared by ' . $branchName . '.',
             'is_read' => 0,
             'created_at' => now(),
         ]);
@@ -336,72 +503,32 @@ Route::post('/orders', function (Request $request) {
         // Fallback if table issues
     }
 
-    // 2. Also save to delivery_boy_app DB so delivery boy gets it assigned!
-    try {
-        DB::table('delivery_boy_app.assigned_orders')->insert([
-            'order_number' => $orderNum,
-            'delivery_boy_id' => 1,
-            'store_name' => $data['store_name'] ?? 'Satara Main Branch',
-            'customer_name' => $data['customer_name'] ?? 'Customer',
-            'customer_mobile' => $data['customer_mobile'] ?? '9876543210',
-            'delivery_address' => $data['delivery_address'] ?? 'Customer Address',
-            'order_amount' => $finalAmount,
-            'payment_mode' => $data['payment_mode'] ?? 'COD',
-            'payment_status' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 'PAID' : 'PENDING',
-            'cod_amount_to_collect' => ($data['payment_mode'] ?? 'COD') === 'COD' ? $finalAmount : 0,
-            'is_cod_collected' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 1 : 0,
-            'delivery_status' => 'ASSIGNED',
-            'items' => $itemsJson,
-            'customer_notes' => 'Deliver fresh produce promptly.',
-            'assigned_time' => now()->format('h:i A'),
-            'created_at' => now(),
-            'updated_at' => now(),
-        ]);
-
-        // Add delivery notification
-        DB::table('delivery_boy_app.delivery_notifications')->insert([
-            'delivery_boy_id' => 1,
-            'title' => 'New Order Assigned!',
-            'message' => 'New Order #' . $orderNum . ' assigned for ' . ($data['customer_name'] ?? 'Customer') . '.',
-            'order_id' => $orderNum,
-            'is_read' => 0,
-            'created_at' => now(),
-        ]);
-    } catch (\Throwable $e) {
-        // Continue
-    }
+    // NOTE: Order is NOT sent to delivery_boy_app yet!
+    // It stays in 'PLACED' status until Admin assigns a delivery boy in the customer's 3KM radius.
 
     // Increment coupon times_used if applied
-    if (!empty($data['coupon_id']) || !empty($data['coupon_code'])) {
+    if ($couponId) {
         try {
-            $couponQuery = Coupon::query();
-            if (!empty($data['coupon_id'])) {
-                $couponQuery->where('id', $data['coupon_id']);
-            } elseif (!empty($data['coupon_code'])) {
-                $couponQuery->whereRaw('UPPER(code) = ?', [strtoupper($data['coupon_code'])]);
-            }
-            $couponQuery->increment('times_used');
-        } catch (\Throwable $e) {
-            // Continue
-        }
+            Coupon::where('id', $couponId)->increment('times_used');
+        } catch (\Throwable $e) {}
     }
 
-    // Return the created order
+    // Return the created order to customer_app
     return corsResponse([
-        'id' => (string) ($customerOrderId ?? time()),
+        'id' => (string) ($order ? $order->id : ($customerOrderId ?? time())),
         'order_number' => $orderNum,
-        'store_id' => $data['store_id'] ?? 1,
-        'store_name' => $data['store_name'] ?? 'Satara Main Branch',
-        'customer_name' => $data['customer_name'] ?? 'Customer',
-        'customer_mobile' => $data['customer_mobile'] ?? '9876543210',
-        'delivery_address' => $data['delivery_address'] ?? 'Customer Address',
+        'store_id' => $branchId,
+        'store_name' => $branchName,
+        'customer_name' => $custName,
+        'customer_mobile' => $mobile,
+        'delivery_address' => $deliveryAddress,
         'items' => $data['items'] ?? [],
         'subtotal' => $subtotal,
         'discount' => $discount,
         'delivery_charge' => $deliveryCharge,
         'final_amount' => $finalAmount,
-        'payment_mode' => $data['payment_mode'] ?? 'COD',
-        'payment_status' => ($data['payment_mode'] ?? 'COD') === 'ONLINE' ? 'PAID' : 'PENDING',
+        'payment_mode' => $paymentMode,
+        'payment_status' => $paymentStatus,
         'order_status' => 'PLACED',
         'placed_at' => now()->toISOString(),
     ]);
@@ -614,10 +741,11 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
             $update['payment_status'] = 'PAID';
         }
 
-        DB::table('delivery_boy_app.assigned_orders')
-            ->where('order_number', $orderNumber)
-            ->orWhere('id', $orderNumber)
-            ->update($update);
+        $dQuery = DB::table('delivery_boy_app.assigned_orders')->where('order_number', $orderNumber);
+        if (is_numeric($orderNumber)) {
+            $dQuery->orWhere('id', (int) $orderNumber);
+        }
+        $dQuery->update($update);
 
         // Also update customer_app orders status
         $custUpdate = [
@@ -627,10 +755,11 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
         if ($isCodCollected || $status === 'DELIVERED') {
             $custUpdate['payment_status'] = 'PAID';
         }
-        DB::table('customer_app.customer_orders')
-            ->where('order_number', $orderNumber)
-            ->orWhere('id', $orderNumber)
-            ->update($custUpdate);
+        $cQuery = DB::table('customer_app.customer_orders')->where('order_number', $orderNumber);
+        if (is_numeric($orderNumber)) {
+            $cQuery->orWhere('id', (int) $orderNumber);
+        }
+        $cQuery->update($custUpdate);
 
         // Notify customer
         DB::table('customer_app.customer_notifications')->insert([
@@ -642,7 +771,11 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
 
         // Sync with admin_web Order model, OrderStatusLog, and Notification
         try {
-            $order = Order::where('order_number', $orderNumber)->orWhere('id', $orderNumber)->first();
+            $orderQuery = Order::where('order_number', $orderNumber);
+            if (is_numeric($orderNumber)) {
+                $orderQuery->orWhere('id', (int) $orderNumber);
+            }
+            $order = $orderQuery->first();
             if ($order) {
                 $oldStatus = $order->order_status;
                 $order->order_status = $status;
@@ -650,6 +783,17 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
                     $order->delivered_at = now();
                     if ($order->payment_mode === 'COD') {
                         $order->payment_status = 'PAID';
+                        \App\Models\Payment::updateOrCreate(
+                            ['order_id' => $order->id],
+                            [
+                                'transaction_id' => 'TXN-COD-' . rand(100000, 999999),
+                                'payment_mode' => 'COD',
+                                'amount' => $order->total_amount,
+                                'status' => 'SUCCESS',
+                                'collected_at' => now(),
+                                'cod_verified' => true,
+                            ]
+                        );
                     }
                 }
                 $order->save();

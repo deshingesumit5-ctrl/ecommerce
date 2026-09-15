@@ -14,6 +14,7 @@ const STATUS_STEPS: { key: OrderStatus; label: string; icon: any }[] = [
   { key: 'PLACED', label: 'Order Placed', icon: Clock },
   { key: 'CONFIRMED', label: 'Confirmed', icon: CheckCircle2 },
   { key: 'PACKED', label: 'Packed & Ready', icon: Package },
+  { key: 'ASSIGNED', label: 'Rider Assigned', icon: Truck },
   { key: 'OUT_FOR_DELIVERY', label: 'Out for Delivery', icon: Truck },
   { key: 'DELIVERED', label: 'Delivered', icon: CheckCircle2 },
 ];

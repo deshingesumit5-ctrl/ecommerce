@@ -35,6 +35,8 @@ export const getCandidateApiUrls = (): string[] => {
   const detected = getApiBaseUrl();
   const candidates = [
     detected,
+    'http://13.60.31.32/api',
+    'https://adminweb.13.60.31.32.sslip.io/api',
     'http://192.168.1.2:8000/api',
     'http://127.0.0.1:8000/api',
     'http://localhost:8000/api',
