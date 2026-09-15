@@ -39,6 +39,20 @@ if (!function_exists('mapRiderDeliveryStatus')) {
     }
 }
 
+if (!function_exists('formatIstTime')) {
+    function formatIstTime($dt, $withSeconds = false) {
+        if (!$dt) {
+            return '';
+        }
+        try {
+            $carbon = $dt instanceof \Carbon\Carbon ? $dt->copy() : \Carbon\Carbon::parse($dt);
+            return $carbon->timezone('Asia/Kolkata')->format($withSeconds ? 'h:i:s A' : 'h:i A');
+        } catch (\Throwable $e) {
+            return '';
+        }
+    }
+}
+
 if (!function_exists('formatAdminOrderForRider')) {
     function formatAdminOrderForRider($o) {
         $status = mapRiderDeliveryStatus($o->order_status ?? 'ASSIGNED');
@@ -80,8 +94,8 @@ if (!function_exists('formatAdminOrderForRider')) {
             'delivery_status' => $status,
             'items' => $items,
             'customer_notes' => $o->special_notes ?: '',
-            'assigned_time' => $o->updated_at ? $o->updated_at->format('h:i A') : '',
-            'delivered_time' => $o->delivered_at ? $o->delivered_at->format('h:i A') : '',
+            'assigned_time' => $o->updated_at ? formatIstTime($o->updated_at) : '',
+            'delivered_time' => $o->delivered_at ? formatIstTime($o->delivered_at, true) : '',
         ];
     }
 }
@@ -828,7 +842,18 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
     $rawStatus = $request->input('delivery_status');
     $status = $rawStatus ? mapRiderDeliveryStatus($rawStatus) : null;
     $isCodCollected = $request->boolean('is_cod_collected', false);
-    $deliveredTime = $status === 'DELIVERED' ? now()->format('h:i A') : null;
+    $deliveredAt = null;
+    $deliveredTime = null;
+    if ($status === 'DELIVERED') {
+        try {
+            $deliveredAt = $request->filled('delivered_at')
+                ? \Carbon\Carbon::parse($request->input('delivered_at'))
+                : now();
+        } catch (\Throwable $e) {
+            $deliveredAt = now();
+        }
+        $deliveredTime = $request->input('delivered_time') ?: formatIstTime($deliveredAt, true);
+    }
     $orderNumber = urldecode((string) $orderNumber);
 
     try {
@@ -905,7 +930,7 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
                 $order->order_status = $status;
             }
             if ($status === 'DELIVERED') {
-                $order->delivered_at = now();
+                $order->delivered_at = $deliveredAt ?: now();
                 if ($order->payment_mode === 'COD') {
                     $order->payment_status = 'PAID';
                     \App\Models\Payment::updateOrCreate(

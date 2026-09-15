@@ -367,7 +367,13 @@ export const DeliveryAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
   };
 
   const updateOrderStatus = async (orderId: string, nextStatus: DeliveryStatus) => {
-    const time = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const deliveredAtIso = new Date().toISOString();
+    const time = new Date().toLocaleTimeString('en-IN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
     const baseUrl = activeBaseUrlRef.current || getApiBaseUrl();
     const target = orders.find((o) => o.id === orderId || o.order_number === orderId);
     const statusKey = encodeURIComponent(target?.order_number || orderId);
@@ -399,6 +405,8 @@ export const DeliveryAppProvider: React.FC<{ children: React.ReactNode }> = ({ c
       await axios.post(`${baseUrl}/delivery/orders/${statusKey}/status`, {
         delivery_status: nextStatus,
         is_cod_collected: nextStatus === 'DELIVERED',
+        delivered_at: nextStatus === 'DELIVERED' ? deliveredAtIso : undefined,
+        delivered_time: nextStatus === 'DELIVERED' ? time : undefined,
       });
       await refreshOrders();
     } catch (e) {

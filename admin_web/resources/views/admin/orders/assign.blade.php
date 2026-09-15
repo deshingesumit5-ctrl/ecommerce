@@ -180,7 +180,7 @@
                                     @if($isDelivered)
                                         <span class="text-[11px] text-emerald-700 font-bold flex items-center">
                                             <i class="fa-solid fa-circle-check mr-1"></i>
-                                            Delivered {{ $order->delivered_at ? 'at ' . $order->delivered_at->format('h:i A') : 'Successfully' }}
+                                            Delivered {{ $order->delivered_at ? 'at ' . $order->delivered_at->copy()->timezone('Asia/Kolkata')->format('h:i:s A') : 'Successfully' }}
                                         </span>
                                     @else
                                         <span class="text-[10px] text-amber-700 font-semibold flex items-center">
