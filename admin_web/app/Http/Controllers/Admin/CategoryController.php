@@ -42,7 +42,11 @@ class CategoryController extends Controller
             $file = $request->file('image_file');
             $extension = $file->getClientOriginalExtension() ?: 'png';
             $filename = time() . '_' . Str::random(10) . '.' . $extension;
-            $file->move(public_path('uploads/categories'), $filename);
+            $uploadDir = public_path('uploads/categories');
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+            $file->move($uploadDir, $filename);
             $validated['image'] = url('uploads/categories/' . $filename);
         }
 
@@ -68,7 +72,11 @@ class CategoryController extends Controller
             $file = $request->file('image_file');
             $extension = $file->getClientOriginalExtension() ?: 'png';
             $filename = time() . '_' . Str::random(10) . '.' . $extension;
-            $file->move(public_path('uploads/categories'), $filename);
+            $uploadDir = public_path('uploads/categories');
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+            $file->move($uploadDir, $filename);
             $validated['image'] = url('uploads/categories/' . $filename);
         } elseif ($request->input('remove_image') === '1') {
             $validated['image'] = null;

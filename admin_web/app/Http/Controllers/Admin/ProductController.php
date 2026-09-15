@@ -64,7 +64,11 @@ class ProductController extends Controller
             $file = $request->file('image_file');
             $extension = $file->getClientOriginalExtension() ?: 'png';
             $filename = time() . '_' . Str::random(10) . '.' . $extension;
-            $file->move(public_path('uploads/products'), $filename);
+            $uploadDir = public_path('uploads/products');
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+            $file->move($uploadDir, $filename);
             $validated['image'] = url('uploads/products/' . $filename);
         }
 
@@ -98,7 +102,11 @@ class ProductController extends Controller
             $file = $request->file('image_file');
             $extension = $file->getClientOriginalExtension() ?: 'png';
             $filename = time() . '_' . Str::random(10) . '.' . $extension;
-            $file->move(public_path('uploads/products'), $filename);
+            $uploadDir = public_path('uploads/products');
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+            $file->move($uploadDir, $filename);
             $validated['image'] = url('uploads/products/' . $filename);
         } elseif ($request->input('remove_image') === '1') {
             $validated['image'] = null;

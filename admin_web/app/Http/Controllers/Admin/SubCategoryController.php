@@ -46,10 +46,24 @@ class SubCategoryController extends Controller
             'category_id' => 'required|exists:categories,id',
             'name' => 'required|string|max:255',
             'image' => 'nullable|string',
+            'image_file' => 'nullable|image|mimes:jpeg,png,jpg,webp,gif|max:10240',
             'display_order' => 'required|integer|min:0',
             'status' => 'required|in:active,inactive',
         ]);
 
+        if ($request->hasFile('image_file')) {
+            $file = $request->file('image_file');
+            $extension = $file->getClientOriginalExtension() ?: 'png';
+            $filename = time() . '_' . Str::random(10) . '.' . $extension;
+            $uploadDir = public_path('uploads/subcategories');
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+            $file->move($uploadDir, $filename);
+            $validated['image'] = url('uploads/subcategories/' . $filename);
+        }
+
+        unset($validated['image_file']);
         $validated['slug'] = Str::slug($validated['name']);
         SubCategory::create($validated);
 
@@ -62,10 +76,28 @@ class SubCategoryController extends Controller
             'category_id' => 'required|exists:categories,id',
             'name' => 'required|string|max:255',
             'image' => 'nullable|string',
+            'image_file' => 'nullable|image|mimes:jpeg,png,jpg,webp,gif|max:10240',
+            'remove_image' => 'nullable|string',
             'display_order' => 'required|integer|min:0',
             'status' => 'required|in:active,inactive',
         ]);
 
+        if ($request->hasFile('image_file')) {
+            $file = $request->file('image_file');
+            $extension = $file->getClientOriginalExtension() ?: 'png';
+            $filename = time() . '_' . Str::random(10) . '.' . $extension;
+            $uploadDir = public_path('uploads/subcategories');
+            if (!file_exists($uploadDir)) {
+                mkdir($uploadDir, 0775, true);
+            }
+            $file->move($uploadDir, $filename);
+            $validated['image'] = url('uploads/subcategories/' . $filename);
+        } elseif ($request->input('remove_image') === '1') {
+            $validated['image'] = null;
+        }
+
+        unset($validated['image_file']);
+        unset($validated['remove_image']);
         $validated['slug'] = Str::slug($validated['name']);
         $subCategory->update($validated);
 

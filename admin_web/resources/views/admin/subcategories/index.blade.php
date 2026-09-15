@@ -147,7 +147,7 @@
                     <button @click="modalOpen = false" class="text-slate-400 hover:text-slate-600"><i class="fa-solid fa-xmark"></i></button>
                 </div>
 
-                <form :action="formAction" method="POST" class="mt-4 space-y-4">
+                <form :action="formAction" method="POST" enctype="multipart/form-data" class="mt-4 space-y-4">
                     @csrf
                     <template x-if="isEdit"><input type="hidden" name="_method" value="PUT"></template>
 
@@ -165,9 +165,40 @@
                         <input type="text" name="name" x-model="formData.name" required placeholder="e.g. Leafy Greens & Herbs" class="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
                     </div>
 
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-700 mb-1">Image URL / Asset</label>
-                        <input type="url" name="image" x-model="formData.image" placeholder="https://images.unsplash.com/..." class="w-full text-xs rounded-xl border border-slate-200 px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
+                    <!-- IMAGE UPLOAD & PREVIEW SECTION (REPLACED URL FIELD) -->
+                    <div class="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                        <div class="flex items-center justify-between">
+                            <label class="block text-xs font-semibold text-slate-700">Sub-Category Photo</label>
+                            <button type="button" @click="$refs.imageFileInput.click()" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold transition flex items-center space-x-1.5 shadow-sm">
+                                <i class="fa-solid fa-cloud-arrow-up"></i>
+                                <span>Upload Photo</span>
+                            </button>
+                        </div>
+
+                        <!-- Hidden File & State Inputs -->
+                        <input type="file" name="image_file" x-ref="imageFileInput" accept="image/*" @change="handleFileSelect($event)" class="hidden">
+                        <input type="hidden" name="image" :value="formData.image">
+                        <input type="hidden" name="remove_image" :value="removeImage">
+
+                        <!-- Preview Card with Pencil Edit and Trash Delete Icons -->
+                        <div x-show="imagePreview" class="relative mt-2 p-2 bg-white rounded-xl border border-slate-200 flex items-center justify-between shadow-sm">
+                            <div class="flex items-center space-x-3 overflow-hidden">
+                                <img :src="imagePreview" alt="Sub-Category Preview" class="w-14 h-14 rounded-lg object-cover border border-slate-200 shadow-sm flex-shrink-0">
+                                <div class="min-w-0">
+                                    <span class="text-xs font-bold text-slate-800 block truncate" x-text="fileName || 'Sub-Category Image'"></span>
+                                    <span class="text-[10px] text-emerald-600 font-medium">Ready to save</span>
+                                </div>
+                            </div>
+                            <!-- Pencil Edit and Trash Delete Icons -->
+                            <div class="flex items-center space-x-1.5 flex-shrink-0">
+                                <button type="button" @click="$refs.imageFileInput.click()" title="Edit Image" class="w-8 h-8 rounded-lg bg-slate-100 hover:bg-emerald-600 hover:text-white text-slate-600 transition flex items-center justify-center">
+                                    <i class="fa-solid fa-pen text-xs"></i>
+                                </button>
+                                <button type="button" @click="deleteImage()" title="Delete Image" class="w-8 h-8 rounded-lg bg-slate-100 hover:bg-rose-600 hover:text-white text-slate-600 transition flex items-center justify-center">
+                                    <i class="fa-solid fa-trash text-xs"></i>
+                                </button>
+                            </div>
+                        </div>
                     </div>
 
                     <div class="grid grid-cols-2 gap-3">
@@ -201,17 +232,53 @@
             modalOpen: false,
             isEdit: false,
             formAction: "{{ route('admin.subcategories.store') }}",
+            imagePreview: '',
+            fileName: '',
+            removeImage: '0',
             formData: { category_id: '{{ $categories->first()?->id ?? 1 }}', name: '', image: '', display_order: 1, status: 'active' },
+            handleFileSelect(e) {
+                const file = e.target.files[0];
+                if (file) {
+                    this.fileName = file.name;
+                    this.removeImage = '0';
+                    const reader = new FileReader();
+                    reader.onload = (event) => {
+                        this.imagePreview = event.target.result;
+                    };
+                    reader.readAsDataURL(file);
+                }
+            },
+            deleteImage() {
+                this.imagePreview = '';
+                this.fileName = '';
+                this.formData.image = '';
+                this.removeImage = '1';
+                if (this.$refs.imageFileInput) {
+                    this.$refs.imageFileInput.value = '';
+                }
+            },
             openCreateModal() {
                 this.isEdit = false;
                 this.formAction = "{{ route('admin.subcategories.store') }}";
+                this.imagePreview = '';
+                this.fileName = '';
+                this.removeImage = '0';
+                if (this.$refs.imageFileInput) {
+                    this.$refs.imageFileInput.value = '';
+                }
                 this.formData = { category_id: '{{ $categories->first()?->id ?? 1 }}', name: '', image: '', display_order: 1, status: 'active' };
                 this.modalOpen = true;
             },
             openEditModal(sub) {
                 this.isEdit = true;
                 this.formAction = `/admin/subcategories/${sub.id}`;
-                this.formData = { category_id: sub.category_id, name: sub.name, image: sub.image, display_order: sub.display_order, status: sub.status };
+                this.imagePreview = sub.image || '';
+                this.fileName = sub.image ? 'Current Sub-Category Image' : '';
+                this.removeImage = '0';
+                if (this.$refs.imageFileInput) {
+                    this.$refs.imageFileInput.value = '';
+                }
+                this.formData = { category_id: sub.category_id, name: sub.name, image: sub.image || '', display_order: sub.display_order, status: sub.status };
                 this.modalOpen = true;
             }
         };
