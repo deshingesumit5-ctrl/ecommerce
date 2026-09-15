@@ -23,6 +23,69 @@ if (!function_exists('corsResponse')) {
     }
 }
 
+if (!function_exists('mapRiderDeliveryStatus')) {
+    function mapRiderDeliveryStatus($status) {
+        $status = strtoupper((string) $status);
+        if ($status === 'OUT_FOR_DELIVERY') {
+            return 'OUT_FOR_DELIVERY';
+        }
+        if ($status === 'DELIVERED') {
+            return 'DELIVERED';
+        }
+        if ($status === 'CANCELLED') {
+            return 'CANCELLED';
+        }
+        return 'ASSIGNED';
+    }
+}
+
+if (!function_exists('formatAdminOrderForRider')) {
+    function formatAdminOrderForRider($o) {
+        $status = mapRiderDeliveryStatus($o->order_status ?? 'ASSIGNED');
+        $items = [];
+        if ($o->relationLoaded('items') || method_exists($o, 'items')) {
+            try {
+                $items = $o->items->map(function ($item) {
+                    return [
+                        'name' => $item->product_name,
+                        'quantity' => (int) $item->quantity,
+                        'unit' => $item->unit ?? 'kg',
+                        'price' => (float) $item->price,
+                    ];
+                })->values()->all();
+            } catch (\Throwable $e) {
+                $items = [];
+            }
+        }
+        $codAmount = ($o->payment_mode === 'COD' && $o->payment_status !== 'PAID')
+            ? (float) $o->total_amount
+            : (float) ($o->payment_mode === 'COD' ? $o->total_amount : 0);
+        if ($status === 'DELIVERED' && $o->payment_mode === 'COD') {
+            $codAmount = (float) $o->total_amount;
+        }
+
+        return [
+            'id' => (string) $o->id,
+            'order_number' => $o->order_number,
+            'delivery_boy_id' => $o->delivery_boy_id,
+            'store_name' => $o->branch?->name ?? 'Satara Store',
+            'customer_name' => $o->customer?->name ?? 'Customer',
+            'customer_mobile' => $o->customer?->mobile ?? '',
+            'delivery_address' => $o->delivery_address ?: ($o->customer?->address ?? 'Doorstep Delivery'),
+            'order_amount' => (float) $o->total_amount,
+            'payment_mode' => $o->payment_mode,
+            'payment_status' => $o->payment_status,
+            'cod_amount_to_collect' => $codAmount,
+            'is_cod_collected' => ($o->payment_mode === 'ONLINE' || $o->payment_status === 'PAID') ? true : false,
+            'delivery_status' => $status,
+            'items' => $items,
+            'customer_notes' => $o->special_notes ?: '',
+            'assigned_time' => $o->updated_at ? $o->updated_at->format('h:i A') : '',
+            'delivered_time' => $o->delivered_at ? $o->delivered_at->format('h:i A') : '',
+        ];
+    }
+}
+
 function sendSmsOtp($mobile, $otp) {
     try {
         $authKey = env('MSG91_AUTH_KEY');
@@ -574,17 +637,18 @@ Route::post('/delivery/login', function (Request $request) {
     }
 
     $passwordValid = false;
-    if (Hash::check($password, $deliveryBoy->password)) {
+    $trimmedPassword = trim($password);
+    if (Hash::check($password, $deliveryBoy->password) || Hash::check($trimmedPassword, $deliveryBoy->password)) {
         $passwordValid = true;
         if (empty($deliveryBoy->plain_password)) {
             $deliveryBoy->plain_password = $password;
             $deliveryBoy->save();
         }
-    } elseif (!empty($deliveryBoy->plain_password) && $deliveryBoy->plain_password === $password) {
+    } elseif (!empty($deliveryBoy->plain_password) && (trim($deliveryBoy->plain_password) === $trimmedPassword || $deliveryBoy->plain_password === $password)) {
         $passwordValid = true;
         $deliveryBoy->password = Hash::make($password);
         $deliveryBoy->save();
-    } elseif ($deliveryBoy->password === $password) {
+    } elseif ($deliveryBoy->password === $password || $deliveryBoy->password === $trimmedPassword) {
         $passwordValid = true;
         $deliveryBoy->plain_password = $password;
         $deliveryBoy->password = Hash::make($password);
@@ -683,56 +747,121 @@ Route::get('/delivery/profile', function (Request $request) {
     ]);
 });
 
-// 6. Delivery Boy Orders API (delivery_boy_app <-> DB)
+// 6. Delivery Boy Orders API (admin_web.orders is source of truth after 3KM assignment)
 Route::get('/delivery/orders', function (Request $request) {
-    try {
-        $deliveryBoyId = $request->get('delivery_boy_id') ?: $request->get('id');
-        $query = DB::table('delivery_boy_app.assigned_orders');
+    $deliveryBoyId = $request->get('delivery_boy_id') ?: $request->get('id');
+    if (!$deliveryBoyId) {
+        return corsResponse([]);
+    }
 
-        if ($deliveryBoyId) {
-            $query->where('delivery_boy_id', $deliveryBoyId);
+    $mapAssignedRow = function ($o) {
+        $items = json_decode($o->items ?? '[]', true);
+        if (!is_array($items)) {
+            $items = [];
         }
+        return [
+            'id' => (string) $o->id,
+            'order_number' => $o->order_number,
+            'delivery_boy_id' => $o->delivery_boy_id ?? 1,
+            'store_name' => $o->store_name,
+            'customer_name' => $o->customer_name,
+            'customer_mobile' => $o->customer_mobile,
+            'delivery_address' => $o->delivery_address,
+            'order_amount' => (float) $o->order_amount,
+            'payment_mode' => $o->payment_mode,
+            'payment_status' => $o->payment_status,
+            'cod_amount_to_collect' => (float) $o->cod_amount_to_collect,
+            'is_cod_collected' => (bool) $o->is_cod_collected,
+            'delivery_status' => mapRiderDeliveryStatus($o->delivery_status),
+            'items' => $items,
+            'customer_notes' => $o->customer_notes ?? '',
+            'assigned_time' => $o->assigned_time ?? '',
+            'delivered_time' => $o->delivered_time ?? '',
+        ];
+    };
 
-        $orders = $query->orderBy('id', 'desc')
+    try {
+        $adminOrders = Order::with(['customer', 'branch', 'items'])
+            ->where('delivery_boy_id', $deliveryBoyId)
+            ->latest('id')
             ->get()
             ->map(function ($o) {
-                return [
-                    'id' => (string) $o->id,
-                    'order_number' => $o->order_number,
-                    'delivery_boy_id' => $o->delivery_boy_id ?? 1,
-                    'store_name' => $o->store_name,
-                    'customer_name' => $o->customer_name,
-                    'customer_mobile' => $o->customer_mobile,
-                    'delivery_address' => $o->delivery_address,
-                    'order_amount' => (float) $o->order_amount,
-                    'payment_mode' => $o->payment_mode,
-                    'payment_status' => $o->payment_status,
-                    'cod_amount_to_collect' => (float) $o->cod_amount_to_collect,
-                    'is_cod_collected' => (bool) $o->is_cod_collected,
-                    'delivery_status' => $o->delivery_status,
-                    'items' => json_decode($o->items ?? '[]', true),
-                    'customer_notes' => $o->customer_notes ?? '',
-                    'assigned_time' => $o->assigned_time ?? '',
-                    'delivered_time' => $o->delivered_time ?? '',
-                ];
-            });
+                return formatAdminOrderForRider($o);
+            })
+            ->values()
+            ->all();
 
-        return corsResponse($orders);
+        $merged = [];
+        foreach ($adminOrders as $row) {
+            $merged[$row['order_number']] = $row;
+        }
+
+        try {
+            $assignedRows = DB::table('delivery_boy_app.assigned_orders')
+                ->where('delivery_boy_id', $deliveryBoyId)
+                ->orderBy('id', 'desc')
+                ->get();
+            foreach ($assignedRows as $row) {
+                if (!isset($merged[$row->order_number])) {
+                    $merged[$row->order_number] = $mapAssignedRow($row);
+                }
+            }
+        } catch (\Throwable $e) {}
+
+        return corsResponse(array_values($merged));
     } catch (\Throwable $e) {
-        return corsResponse([]);
+        try {
+            $orders = DB::table('delivery_boy_app.assigned_orders')
+                ->where('delivery_boy_id', $deliveryBoyId)
+                ->orderBy('id', 'desc')
+                ->get()
+                ->map($mapAssignedRow);
+
+            return corsResponse($orders);
+        } catch (\Throwable $e2) {
+            return corsResponse([]);
+        }
     }
 });
 
 Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Request $request) {
-    $status = $request->input('delivery_status');
+    $rawStatus = $request->input('delivery_status');
+    $status = $rawStatus ? mapRiderDeliveryStatus($rawStatus) : null;
     $isCodCollected = $request->boolean('is_cod_collected', false);
     $deliveredTime = $status === 'DELIVERED' ? now()->format('h:i A') : null;
+    $orderNumber = urldecode((string) $orderNumber);
 
     try {
+        $resolvedNumber = $orderNumber;
+        $order = Order::where('order_number', $orderNumber)->first();
+
+        if (!$order) {
+            try {
+                $assignedQuery = DB::table('delivery_boy_app.assigned_orders')->where('order_number', $orderNumber);
+                if (is_numeric($orderNumber)) {
+                    $assignedQuery->orWhere('id', (int) $orderNumber);
+                }
+                $assignedRow = $assignedQuery->first();
+                if ($assignedRow && !empty($assignedRow->order_number)) {
+                    $resolvedNumber = $assignedRow->order_number;
+                    $order = Order::where('order_number', $resolvedNumber)->first();
+                }
+            } catch (\Throwable $e) {}
+        }
+
+        if (!$order && is_numeric($orderNumber)) {
+            $order = Order::find((int) $orderNumber);
+            if ($order) {
+                $resolvedNumber = $order->order_number;
+            }
+        }
+
         $update = [
-            'delivery_status' => $status,
             'updated_at' => now(),
         ];
+        if ($status) {
+            $update['delivery_status'] = $status;
+        }
         if ($deliveredTime) {
             $update['delivered_time'] = $deliveredTime;
         }
@@ -741,63 +870,62 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
             $update['payment_status'] = 'PAID';
         }
 
-        $dQuery = DB::table('delivery_boy_app.assigned_orders')->where('order_number', $orderNumber);
-        if (is_numeric($orderNumber)) {
-            $dQuery->orWhere('id', (int) $orderNumber);
-        }
-        $dQuery->update($update);
+        try {
+            DB::table('delivery_boy_app.assigned_orders')
+                ->where('order_number', $resolvedNumber)
+                ->update($update);
+        } catch (\Throwable $e) {}
 
         // Also update customer_app orders status
         $custUpdate = [
-            'order_status' => $status,
             'updated_at' => now(),
         ];
+        if ($status) {
+            $custUpdate['order_status'] = $status;
+        }
         if ($isCodCollected || $status === 'DELIVERED') {
             $custUpdate['payment_status'] = 'PAID';
         }
-        $cQuery = DB::table('customer_app.customer_orders')->where('order_number', $orderNumber);
-        if (is_numeric($orderNumber)) {
-            $cQuery->orWhere('id', (int) $orderNumber);
-        }
-        $cQuery->update($custUpdate);
-
-        // Notify customer
-        DB::table('customer_app.customer_notifications')->insert([
-            'title' => 'Order ' . str_replace('_', ' ', $status),
-            'message' => 'Your order #' . $orderNumber . ' status is now ' . str_replace('_', ' ', $status) . '.',
-            'is_read' => 0,
-            'created_at' => now(),
-        ]);
+        try {
+            DB::table('customer_app.customer_orders')->where('order_number', $resolvedNumber)->update($custUpdate);
+            if ($status) {
+                DB::table('customer_app.customer_notifications')->insert([
+                    'title' => 'Order ' . str_replace('_', ' ', $status),
+                    'message' => 'Your order #' . $resolvedNumber . ' status is now ' . str_replace('_', ' ', $status) . '.',
+                    'is_read' => 0,
+                    'created_at' => now(),
+                ]);
+            }
+        } catch (\Throwable $e) {}
 
         // Sync with admin_web Order model, OrderStatusLog, and Notification
-        try {
-            $orderQuery = Order::where('order_number', $orderNumber);
-            if (is_numeric($orderNumber)) {
-                $orderQuery->orWhere('id', (int) $orderNumber);
-            }
-            $order = $orderQuery->first();
-            if ($order) {
-                $oldStatus = $order->order_status;
+        if ($order) {
+            $oldStatus = $order->order_status;
+            if ($status) {
                 $order->order_status = $status;
-                if ($status === 'DELIVERED') {
-                    $order->delivered_at = now();
-                    if ($order->payment_mode === 'COD') {
-                        $order->payment_status = 'PAID';
-                        \App\Models\Payment::updateOrCreate(
-                            ['order_id' => $order->id],
-                            [
-                                'transaction_id' => 'TXN-COD-' . rand(100000, 999999),
-                                'payment_mode' => 'COD',
-                                'amount' => $order->total_amount,
-                                'status' => 'SUCCESS',
-                                'collected_at' => now(),
-                                'cod_verified' => true,
-                            ]
-                        );
-                    }
+            }
+            if ($status === 'DELIVERED') {
+                $order->delivered_at = now();
+                if ($order->payment_mode === 'COD') {
+                    $order->payment_status = 'PAID';
+                    \App\Models\Payment::updateOrCreate(
+                        ['order_id' => $order->id],
+                        [
+                            'transaction_id' => 'TXN-COD-' . rand(100000, 999999),
+                            'payment_mode' => 'COD',
+                            'amount' => $order->total_amount,
+                            'status' => 'SUCCESS',
+                            'collected_at' => now(),
+                            'cod_verified' => true,
+                        ]
+                    );
                 }
-                $order->save();
+            } elseif ($isCodCollected && $order->payment_mode === 'COD') {
+                $order->payment_status = 'PAID';
+            }
+            $order->save();
 
+            if ($status && $oldStatus !== $status) {
                 \App\Models\OrderStatusLog::create([
                     'order_id' => $order->id,
                     'from_status' => $oldStatus,
@@ -814,9 +942,9 @@ Route::post('/delivery/orders/{orderNumber}/status', function ($orderNumber, Req
                     'is_read' => false,
                 ]);
             }
-        } catch (\Throwable $e) {}
+        }
 
-        return corsResponse(['success' => true, 'status' => $status]);
+        return corsResponse(['success' => true, 'status' => $status, 'order_number' => $resolvedNumber]);
     } catch (\Throwable $e) {
         return corsResponse(['success' => false, 'error' => $e->getMessage()], 500);
     }

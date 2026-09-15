@@ -341,7 +341,9 @@ class OrderController extends Controller
                 'payment_status' => $order->payment_status,
                 'cod_amount_to_collect' => ($order->payment_mode === 'COD' && $order->payment_status !== 'PAID') ? (float) $order->total_amount : 0,
                 'is_cod_collected' => ($order->payment_mode === 'ONLINE' || $order->payment_status === 'PAID') ? 1 : 0,
-                'delivery_status' => $order->order_status === 'OUT_FOR_DELIVERY' ? 'OUT_FOR_DELIVERY' : 'ASSIGNED',
+                'delivery_status' => in_array($order->order_status, ['OUT_FOR_DELIVERY', 'DELIVERED', 'CANCELLED'], true)
+                    ? $order->order_status
+                    : 'ASSIGNED',
                 'items' => $itemsJson,
                 'customer_notes' => $order->special_notes ?: '3KM Area Hyperlocal Delivery',
                 'assigned_time' => now()->format('h:i A'),
