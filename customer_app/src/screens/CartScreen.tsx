@@ -9,11 +9,16 @@ import {
   TextInput,
 } from 'react-native';
 import { useApp } from '../context/AppContext';
-import { Trash2, Plus, Minus, Tag, ArrowRight, ShieldCheck, AlertTriangle } from 'lucide-react-native';
+import { Trash2, Plus, Minus, Tag, ArrowRight, ShieldCheck, AlertTriangle, MapPin, X } from 'lucide-react-native';
 
-export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCatalog: () => void }> = ({
+export const CartScreen: React.FC<{
+  onNavigateToCheckout: () => void;
+  onBrowseCatalog: () => void;
+  onChangeAddress?: () => void;
+}> = ({
   onNavigateToCheckout,
   onBrowseCatalog,
+  onChangeAddress,
 }) => {
   const {
     cart,
@@ -25,6 +30,7 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
     getCartSummary,
     isDeliverable,
     deliveryDistanceKm,
+    customerLocation,
   } = useApp();
 
   const [couponInput, setCouponInput] = useState('');
@@ -58,7 +64,23 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
     <View style={{ flex: 1, backgroundColor: '#f8fafc' }}>
       <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <Text style={styles.headerTitle}>Shopping Cart ({cart.length})</Text>
+          <Text style={styles.headerTitle}>My Cart</Text>
+        </View>
+
+        <View style={styles.addressCard}>
+          <View style={styles.addressHeader}>
+            <MapPin size={18} color="#10b981" />
+            <Text style={styles.addressTitle}>Delivery Address</Text>
+          </View>
+          <Text style={styles.addressText} numberOfLines={2}>{customerLocation.label}</Text>
+          <TouchableOpacity
+            style={styles.addressBtn}
+            onPress={onChangeAddress}
+            disabled={!onChangeAddress}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.addressBtnText}>Select Delivery Address</Text>
+          </TouchableOpacity>
         </View>
 
         {!isDeliverable && (
@@ -86,36 +108,62 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
 
         {/* Cart Items List */}
         <View style={styles.itemsCard}>
-          {cart.map((item) => (
-            <View key={item.product.id} style={styles.itemRow}>
-              <Image source={{ uri: item.product.image_url }} style={styles.itemImage} />
-              <View style={styles.itemDetails}>
-                <Text style={styles.itemName}>{item.product.name}</Text>
-                <Text style={styles.itemUnit}>{item.product.unit}</Text>
-                <Text style={styles.itemPrice}>₹{item.product.daily_price * item.quantity}</Text>
-              </View>
-
-              <View style={styles.qtyContainer}>
+          {cart.map((item) => {
+            const lineTotal = item.product.daily_price * item.quantity;
+            const mrpTotal = item.product.base_price * item.quantity;
+            const offPct =
+              item.product.base_price > item.product.daily_price
+                ? Math.round(((item.product.base_price - item.product.daily_price) / item.product.base_price) * 100)
+                : 0;
+            return (
+              <View key={item.product.id} style={styles.productBlock}>
+                <View style={styles.itemRow}>
+                  <Image source={{ uri: item.product.image_url }} style={styles.itemImage} />
+                  <View style={styles.itemDetails}>
+                    <Text style={styles.itemName}>{item.product.name}</Text>
+                    <View style={styles.priceLine}>
+                      <Text style={styles.itemPrice}>₹{lineTotal}</Text>
+                      {mrpTotal > lineTotal && (
+                        <>
+                          <Text style={styles.itemMrp}>₹{mrpTotal}</Text>
+                          <Text style={styles.itemOff}>{offPct}% Off</Text>
+                        </>
+                      )}
+                    </View>
+                    <View style={styles.metaRow}>
+                      <Text style={styles.itemUnit}>{item.product.unit}</Text>
+                      <View style={styles.qtyContainer}>
+                        <TouchableOpacity
+                          style={styles.qtyBtn}
+                          onPress={() => updateQuantity(item.product.id, item.quantity - 1)}
+                        >
+                          {item.quantity === 1 ? (
+                            <Trash2 size={13} color="#ef4444" />
+                          ) : (
+                            <Minus size={13} color="#0f172a" />
+                          )}
+                        </TouchableOpacity>
+                        <Text style={styles.qtyText}>{item.quantity}</Text>
+                        <TouchableOpacity
+                          style={styles.qtyBtn}
+                          onPress={() => updateQuantity(item.product.id, item.quantity + 1)}
+                        >
+                          <Plus size={13} color="#0f172a" />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  </View>
+                </View>
                 <TouchableOpacity
-                  style={styles.qtyBtn}
-                  onPress={() => updateQuantity(item.product.id, item.quantity - 1)}
+                  style={styles.removeRow}
+                  onPress={() => removeFromCart(item.product.id)}
                 >
-                  {item.quantity === 1 ? (
-                    <Trash2 size={13} color="#ef4444" />
-                  ) : (
-                    <Minus size={13} color="#0f172a" />
-                  )}
-                </TouchableOpacity>
-                <Text style={styles.qtyText}>{item.quantity}</Text>
-                <TouchableOpacity
-                  style={styles.qtyBtn}
-                  onPress={() => updateQuantity(item.product.id, item.quantity + 1)}
-                >
-                  <Plus size={13} color="#0f172a" />
+                  <X size={14} color="#64748b" />
+                  <Text style={styles.removeText}>Remove</Text>
                 </TouchableOpacity>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </View>
 
         {/* Coupon Code Section */}
@@ -164,10 +212,16 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
 
         {/* Bill Summary */}
         <View style={styles.billCard}>
-          <Text style={styles.billTitle}>Bill Details</Text>
+          <Text style={styles.billTitle}>Price Details ({cart.length} Item{cart.length > 1 ? 's' : ''})</Text>
           <View style={styles.billRow}>
-            <Text style={styles.billLabel}>Item Total (Daily Rates)</Text>
-            <Text style={styles.billVal}>₹{subtotal}</Text>
+            <Text style={styles.billLabel}>Product Price</Text>
+            <Text style={styles.billVal}>+ ₹{cart.reduce((sum, item) => sum + item.product.base_price * item.quantity, 0)}</Text>
+          </View>
+          <View style={styles.billRow}>
+            <Text style={[styles.billLabel, { color: '#10b981' }]}>Total Discounts</Text>
+            <Text style={[styles.billVal, { color: '#10b981' }]}>
+              - ₹{cart.reduce((sum, item) => sum + Math.max(0, item.product.base_price - item.product.daily_price) * item.quantity, 0) + discount}
+            </Text>
           </View>
           {discount > 0 && (
             <View style={styles.billRow}>
@@ -187,9 +241,17 @@ export const CartScreen: React.FC<{ onNavigateToCheckout: () => void; onBrowseCa
           </View>
           <View style={styles.divider} />
           <View style={styles.billRow}>
-            <Text style={styles.totalLabel}>To Pay</Text>
+            <Text style={styles.totalLabel}>Order Total</Text>
             <Text style={styles.totalVal}>₹{finalAmount}</Text>
           </View>
+          {discount > 0 || cart.some((item) => item.product.base_price > item.product.daily_price) ? (
+            <View style={styles.savedBanner}>
+              <Text style={styles.savedBannerText}>
+                Yay! Your total discount is ₹
+                {cart.reduce((sum, item) => sum + Math.max(0, item.product.base_price - item.product.daily_price) * item.quantity, 0) + discount}
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <View style={{ height: 140 }} />
@@ -218,6 +280,22 @@ const styles = StyleSheet.create({
   container: { flex: 1, paddingHorizontal: 16 },
   header: { paddingTop: 48, paddingBottom: 16 },
   headerTitle: { fontSize: 20, fontWeight: '800', color: '#0f172a' },
+  addressCard: {
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    padding: 14,
+    marginBottom: 14,
+  },
+  addressHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: 8 },
+  addressTitle: { fontSize: 14, fontWeight: '700', color: '#0f172a', marginLeft: 6 },
+  addressText: { fontSize: 13, color: '#475569', marginBottom: 12, lineHeight: 18 },
+  addressBtn: {
+    backgroundColor: '#10b981',
+    borderRadius: 10,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  addressBtnText: { color: '#ffffff', fontWeight: '800', fontSize: 14 },
   emptyContainer: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
   emptyEmoji: { fontSize: 64, marginBottom: 12 },
   emptyTitle: { fontSize: 20, fontWeight: '800', color: '#0f172a', marginBottom: 8 },
@@ -248,18 +326,34 @@ const styles = StyleSheet.create({
   goalText: { color: '#065f46', fontSize: 13 },
   boldAmount: { fontWeight: '800' },
   itemsCard: { backgroundColor: '#ffffff', borderRadius: 16, padding: 14, marginBottom: 14 },
-  itemRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingVertical: 10,
+  productBlock: {
     borderBottomWidth: 1,
     borderBottomColor: '#f1f5f9',
+    paddingBottom: 8,
+    marginBottom: 8,
   },
-  itemImage: { width: 50, height: 50, borderRadius: 8, backgroundColor: '#f1f5f9' },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: 10,
+  },
+  itemImage: { width: 78, height: 78, borderRadius: 10, backgroundColor: '#f1f5f9' },
   itemDetails: { flex: 1, marginLeft: 12 },
   itemName: { fontSize: 13, fontWeight: '700', color: '#0f172a' },
-  itemUnit: { fontSize: 11, color: '#64748b', marginTop: 2 },
-  itemPrice: { fontSize: 14, fontWeight: '800', color: '#0f172a', marginTop: 4 },
+  priceLine: { flexDirection: 'row', alignItems: 'center', marginTop: 6, flexWrap: 'wrap' },
+  itemPrice: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
+  itemMrp: { fontSize: 12, color: '#94a3b8', textDecorationLine: 'line-through', marginLeft: 8 },
+  itemOff: { fontSize: 12, color: '#10b981', fontWeight: '800', marginLeft: 8 },
+  metaRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 8 },
+  itemUnit: { fontSize: 12, color: '#64748b' },
+  removeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    paddingTop: 6,
+    paddingBottom: 4,
+  },
+  removeText: { color: '#64748b', fontSize: 12, fontWeight: '700', marginLeft: 4 },
   qtyContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -318,6 +412,14 @@ const styles = StyleSheet.create({
   divider: { height: 1, backgroundColor: '#e2e8f0', marginVertical: 10 },
   totalLabel: { fontSize: 15, fontWeight: '800', color: '#0f172a' },
   totalVal: { fontSize: 17, fontWeight: '800', color: '#10b981' },
+  savedBanner: {
+    backgroundColor: '#ecfdf5',
+    borderRadius: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    marginTop: 10,
+  },
+  savedBannerText: { color: '#047857', fontSize: 13, fontWeight: '700', textAlign: 'center' },
   bottomBar: {
     position: 'absolute',
     bottom: 0,

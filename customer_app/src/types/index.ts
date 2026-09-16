@@ -85,9 +85,11 @@ export interface Coupon {
 export interface OrderItem {
   product_id: number;
   product_name: string;
+  unit?: string;
   unit_price: number;
   quantity: number;
   total_price: number;
+  image_url?: string;
 }
 
 export interface Order {
@@ -107,6 +109,7 @@ export interface Order {
   payment_status: PaymentStatus;
   order_status: OrderStatus;
   placed_at: string;
+  delivered_at?: string | null;
   status_timeline: {
     status: OrderStatus;
     timestamp: string;

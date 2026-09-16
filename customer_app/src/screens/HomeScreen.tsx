@@ -161,9 +161,9 @@ export const HomeScreen: React.FC<{
       <View style={styles.promoCard}>
         <View style={styles.promoBadge}>
           <Sparkles size={14} color="#f59e0b" />
-          <Text style={styles.promoBadgeText}>Today's Market Prices</Text>
+          <Text style={styles.promoBadgeText}>Today's Non-Veg Prices</Text>
         </View>
-        <Text style={styles.promoTitle}>Fresh Stock Directly From Mandi</Text>
+        <Text style={styles.promoTitle}>Fresh Mutton, Chicken, Fish & Eggs</Text>
         <Text style={styles.promoSub}>
           Free delivery on all orders above ₹500 in your 3 KM zone!
         </Text>
@@ -217,7 +217,12 @@ export const HomeScreen: React.FC<{
           </Text>
         </View>
       ) : (
-        <View style={styles.productGrid}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          nestedScrollEnabled
+          contentContainerStyle={styles.productRow}
+        >
           {filteredProducts.map((product) => {
             const qty = getProductCartQty(product.id);
             return (
@@ -261,7 +266,7 @@ export const HomeScreen: React.FC<{
                       onPress={() => addToCart(product)}
                     >
                       <Plus size={16} color="#ffffff" />
-                      <Text style={styles.addButtonText}>ADD</Text>
+                      <Text style={styles.addButtonText}>Add to cart</Text>
                     </TouchableOpacity>
                   ) : (
                     <View style={styles.qtyContainer}>
@@ -284,7 +289,7 @@ export const HomeScreen: React.FC<{
               </View>
             );
           })}
-        </View>
+        </ScrollView>
       )}
 
       {/* Notifications Modal */}
@@ -469,19 +474,19 @@ const styles = StyleSheet.create({
   categoryImg: { width: 44, height: 44, borderRadius: 22 },
   categoryEmoji: { fontSize: 24 },
   categoryName: { fontSize: 11, color: '#334155', fontWeight: '600', textAlign: 'center' },
-  productGrid: {
+  productRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-start',
-    gap: 14,
+    alignItems: 'stretch',
+    paddingBottom: 8,
+    paddingRight: 8,
   },
   productCard: {
-    width: Platform.OS === 'web' ? 170 : '48%',
-    maxWidth: 180,
+    width: 170,
     backgroundColor: '#ffffff',
     borderRadius: 14,
     padding: 10,
-    marginBottom: 14,
+    marginRight: 14,
+    justifyContent: 'space-between',
     shadowColor: '#000',
     shadowOpacity: 0.04,
     shadowRadius: 6,
@@ -502,7 +507,7 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  productInfo: { marginTop: 8 },
+  productInfo: { marginTop: 8, flexGrow: 1 },
   unitBadge: { fontSize: 10, color: '#64748b', fontWeight: '600' },
   productName: { fontSize: 13, fontWeight: '700', color: '#0f172a', marginTop: 2 },
   productDesc: { fontSize: 11, color: '#64748b', marginTop: 2, lineHeight: 15 },
@@ -518,7 +523,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 8,
   },
-  addButtonText: { color: '#ffffff', fontWeight: '800', fontSize: 12, marginLeft: 4 },
+  addButtonText: { color: '#ffffff', fontWeight: '800', fontSize: 11, marginLeft: 4 },
   qtyContainer: {
     flexDirection: 'row',
     alignItems: 'center',

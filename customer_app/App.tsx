@@ -88,6 +88,7 @@ const AppContent: React.FC = () => {
               <CartScreen
                 onNavigateToCheckout={() => setIsCheckout(true)}
                 onBrowseCatalog={() => setCurrentTab('catalog')}
+                onChangeAddress={() => setShowLocationModal(true)}
               />
             )
           )}
@@ -170,7 +171,7 @@ const AppContent: React.FC = () => {
                   currentTab === 'cart' && styles.tabLabelActive,
                 ]}
               >
-                Cart
+                My Cart
               </Text>
             </TouchableOpacity>
 
@@ -193,7 +194,7 @@ const AppContent: React.FC = () => {
                   currentTab === 'orders' && styles.tabLabelActive,
                 ]}
               >
-                Orders
+                My Orders
               </Text>
             </TouchableOpacity>
 
@@ -290,7 +291,7 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
   },
   tabItem: { alignItems: 'center', justifyContent: 'center', minWidth: 60 },
-  tabLabel: { fontSize: 11, color: '#94a3b8', fontWeight: '600', marginTop: 4 },
+  tabLabel: { fontSize: 10, color: '#94a3b8', fontWeight: '600', marginTop: 4 },
   tabLabelActive: { color: '#10b981', fontWeight: '800' },
   badge: {
     position: 'absolute',

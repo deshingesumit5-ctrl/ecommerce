@@ -133,6 +133,11 @@ class OrderController extends Controller
             'is_read' => false,
         ]);
 
+        $order->loadMissing('customer');
+        if (function_exists('saveCustomerOrderNotification')) {
+            saveCustomerOrderNotification($newStatus, $order->order_number, $order->customer?->mobile);
+        }
+
         // Sync with delivery_boy_app & customer_app
         if ($deliveryBoy) {
             $this->syncToDeliveryAndCustomerApp($order, $deliveryBoy, $isReassignment, $previousDeliveryBoyId);
@@ -144,13 +149,6 @@ class OrderController extends Controller
                         'order_status' => $order->order_status,
                         'updated_at' => now(),
                     ]);
-
-                DB::table('customer_app.customer_notifications')->insert([
-                    'title' => 'Order ' . str_replace('_', ' ', $order->order_status),
-                    'message' => "Your order #{$order->order_number} status is now " . str_replace('_', ' ', $order->order_status) . ".",
-                    'is_read' => 0,
-                    'created_at' => now(),
-                ]);
             } catch (\Throwable $e) {}
         }
 
@@ -393,12 +391,16 @@ class OrderController extends Controller
                     'updated_at' => now(),
                 ]);
 
-            DB::table('customer_app.customer_notifications')->insert([
-                'title' => $isReassignment ? 'Delivery Partner Reassigned' : 'Delivery Partner Assigned!',
-                'message' => "Your order #{$order->order_number} is assigned to delivery partner {$deliveryBoy->name} ({$deliveryBoy->mobile}) for delivery.",
-                'is_read' => 0,
-                'created_at' => now(),
-            ]);
+            if (function_exists('saveCustomerOrderNotification')) {
+                saveCustomerOrderNotification($order->order_status, $order->order_number, $order->customer?->mobile);
+            } else {
+                DB::table('customer_app.customer_notifications')->insert([
+                    'title' => $isReassignment ? 'Delivery Partner Reassigned' : 'Delivery Partner Assigned!',
+                    'message' => "Your order #{$order->order_number} is assigned to delivery partner {$deliveryBoy->name} ({$deliveryBoy->mobile}) for delivery.",
+                    'is_read' => 0,
+                    'created_at' => now(),
+                ]);
+            }
         } catch (\Throwable $e) {
             \Illuminate\Support\Facades\Log::warning('Customer DB sync warning: ' . $e->getMessage());
         }

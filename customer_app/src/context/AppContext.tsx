@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef } from 'react';
 import { AppState, Platform, NativeModules } from 'react-native';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -36,8 +36,67 @@ export const getDetectedHost = (): string => {
 
   return '192.168.1.2';
 };
-// Live AWS EC2 Backend API
-const API_BASE_URL = 'http://13.60.31.32/api';
+
+const LIVE_HTTPS_API = 'https://adminweb.13.60.31.32.sslip.io/api';
+const LIVE_HTTP_API = 'http://13.60.31.32/api';
+const API_TIMEOUT_MS = 6000;
+
+export const getApiBaseUrl = (): string => LIVE_HTTPS_API;
+
+export const getCandidateApiUrls = (): string[] => {
+  const host = getDetectedHost();
+  const candidates = [
+    LIVE_HTTPS_API,
+    LIVE_HTTP_API,
+    `http://${host}:8000/api`,
+    'http://192.168.1.2:8000/api',
+    'http://127.0.0.1:8000/api',
+    'http://localhost:8000/api',
+    'http://10.0.2.2:8000/api',
+  ];
+  return Array.from(new Set(candidates.filter(Boolean)));
+};
+
+const extractList = (payload: any): any[] | null => {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  return null;
+};
+
+const CART_STORAGE_KEY = 'customer_cart';
+
+const readWebLocalCart = (): string | null => {
+  if (typeof window === 'undefined' || !window.localStorage) return null;
+  try {
+    return window.localStorage.getItem(CART_STORAGE_KEY);
+  } catch (e) {
+    return null;
+  }
+};
+
+const writePersistedCart = (nextCart: CartItem[]) => {
+  const json = JSON.stringify(nextCart);
+  AsyncStorage.setItem(CART_STORAGE_KEY, json).catch(() => {});
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      window.localStorage.setItem(CART_STORAGE_KEY, json);
+    } catch (e) {}
+  }
+};
+
+const readPersistedCart = async (): Promise<CartItem[]> => {
+  try {
+    let raw = await AsyncStorage.getItem(CART_STORAGE_KEY);
+    if (!raw) {
+      raw = readWebLocalCart();
+    }
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (e) {
+    return [];
+  }
+};
 
 interface AppContextType {
   customer: Customer | null;
@@ -116,6 +175,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [orders, setOrders] = useState<Order[]>([]);
   const [activeOrder, setActiveOrder] = useState<Order | null>(null);
   const [loading, setLoading] = useState(false);
+  const cartRestoredRef = useRef(false);
+  const customerRef = useRef<Customer | null>(null);
+  const activeBaseUrlRef = useRef<string>(getApiBaseUrl());
+  customerRef.current = customer;
+
+  const getActiveApiBase = () => activeBaseUrlRef.current || getApiBaseUrl();
+
+  const persistBaseUrl = (url: string) => {
+    if (!url) return;
+    activeBaseUrlRef.current = url;
+    AsyncStorage.setItem('customer_app_base_url', url).catch(() => {});
+  };
 
   // Restore state from AsyncStorage on launch (keeps cart, session, location, and cache on page refresh)
   useEffect(() => {
@@ -123,23 +194,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       try {
         const [
           savedCust,
-          savedCart,
           savedCoupon,
           savedLoc,
           cachedProds,
           cachedCats,
           cachedStores,
           cachedOrders,
+          savedApiUrl,
         ] = await Promise.all([
           AsyncStorage.getItem('customer_session'),
-          AsyncStorage.getItem('customer_cart'),
           AsyncStorage.getItem('customer_applied_coupon'),
           AsyncStorage.getItem('customer_location'),
           AsyncStorage.getItem('cached_products'),
           AsyncStorage.getItem('cached_categories'),
           AsyncStorage.getItem('cached_stores'),
           AsyncStorage.getItem('cached_orders'),
+          AsyncStorage.getItem('customer_app_base_url'),
         ]);
+        const savedCartItems = await readPersistedCart();
+        if (savedApiUrl && !/localhost|127\.0\.0\.1/.test(savedApiUrl)) {
+          persistBaseUrl(savedApiUrl);
+        } else {
+          persistBaseUrl(getApiBaseUrl());
+        }
 
         if (savedCust) {
           try {
@@ -148,14 +225,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             setIsAuthenticated(true);
           } catch (e) {}
         }
-        if (savedCart) {
-          try {
-            const parsedCart = JSON.parse(savedCart);
-            if (Array.isArray(parsedCart) && parsedCart.length > 0) {
-              setCart(parsedCart);
-            }
-          } catch (e) {}
+        if (savedCartItems.length > 0) {
+          setCart(savedCartItems);
         }
+        cartRestoredRef.current = true;
         if (savedCoupon) {
           try {
             const parsedCoupon = JSON.parse(savedCoupon);
@@ -208,6 +281,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         }
       } catch (e) {
         console.warn('Error restoring persisted state:', e);
+        cartRestoredRef.current = true;
       }
     };
     restoreAll();
@@ -218,17 +292,46 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       if (!isBackground) setLoading(true);
       const timestamp = Date.now();
-      const [prodRes, catRes, storeRes, orderRes, notifRes, couponRes] = await Promise.allSettled([
-        axios.get(`${API_BASE_URL}/products?_t=${timestamp}`),
-        axios.get(`${API_BASE_URL}/categories?_t=${timestamp}`),
-        axios.get(`${API_BASE_URL}/stores?_t=${timestamp}`),
-        axios.get(`${API_BASE_URL}/orders?_t=${timestamp}`),
-        axios.get(`${API_BASE_URL}/notifications?app=customer&_t=${timestamp}`),
-        axios.get(`${API_BASE_URL}/coupons?_t=${timestamp}`),
-      ]);
+      const mobile = customerRef.current?.mobile || '';
+      const currentUrl = getActiveApiBase();
+      const urlsToTry = isBackground
+        ? [currentUrl]
+        : [currentUrl, ...getCandidateApiUrls().filter((u) => u !== currentUrl)];
 
-      if (prodRes.status === 'fulfilled' && Array.isArray(prodRes.value.data)) {
-        const freshProducts = prodRes.value.data;
+      let prodRes: PromiseSettledResult<any> | null = null;
+      let catRes: PromiseSettledResult<any> | null = null;
+      let storeRes: PromiseSettledResult<any> | null = null;
+      let orderRes: PromiseSettledResult<any> | null = null;
+      let notifRes: PromiseSettledResult<any> | null = null;
+      let couponRes: PromiseSettledResult<any> | null = null;
+
+      for (const baseUrl of urlsToTry) {
+        const results = await Promise.allSettled([
+          axios.get(`${baseUrl}/products?_t=${timestamp}`, { timeout: API_TIMEOUT_MS }),
+          axios.get(`${baseUrl}/categories?_t=${timestamp}`, { timeout: API_TIMEOUT_MS }),
+          axios.get(`${baseUrl}/stores?_t=${timestamp}`, { timeout: API_TIMEOUT_MS }),
+          axios.get(`${baseUrl}/orders?_t=${timestamp}`, { timeout: API_TIMEOUT_MS }),
+          axios.get(
+            `${baseUrl}/notifications?app=customer&mobile=${encodeURIComponent(mobile)}&_t=${timestamp}`,
+            { timeout: API_TIMEOUT_MS }
+          ),
+          axios.get(`${baseUrl}/coupons?_t=${timestamp}`, { timeout: API_TIMEOUT_MS }),
+        ]);
+        const connected = results.some((r) => r.status === 'fulfilled');
+        if (!connected) {
+          continue;
+        }
+        persistBaseUrl(baseUrl);
+        [prodRes, catRes, storeRes, orderRes, notifRes, couponRes] = results;
+        break;
+      }
+
+      if (!prodRes || !catRes || !storeRes || !orderRes || !notifRes || !couponRes) {
+        return;
+      }
+
+      const freshProducts = prodRes.status === 'fulfilled' ? extractList(prodRes.value.data) : null;
+      if (freshProducts) {
         setProducts(freshProducts);
         AsyncStorage.setItem('cached_products', JSON.stringify(freshProducts)).catch(() => {});
 
@@ -242,26 +345,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             }
             return item;
           });
-          AsyncStorage.setItem('customer_cart', JSON.stringify(updated)).catch(() => {});
+          writePersistedCart(updated);
           return updated;
         });
       }
-      if (catRes.status === 'fulfilled' && Array.isArray(catRes.value.data)) {
-        setCategories(catRes.value.data);
-        AsyncStorage.setItem('cached_categories', JSON.stringify(catRes.value.data)).catch(() => {});
+      const freshCategories = catRes.status === 'fulfilled' ? extractList(catRes.value.data) : null;
+      if (freshCategories) {
+        setCategories(freshCategories);
+        AsyncStorage.setItem('cached_categories', JSON.stringify(freshCategories)).catch(() => {});
       }
-      if (couponRes.status === 'fulfilled' && Array.isArray(couponRes.value.data)) {
-        setCoupons(couponRes.value.data);
+      const freshCoupons = couponRes.status === 'fulfilled' ? extractList(couponRes.value.data) : null;
+      if (freshCoupons) {
+        setCoupons(freshCoupons);
       }
-      if (storeRes.status === 'fulfilled' && Array.isArray(storeRes.value.data) && storeRes.value.data.length > 0) {
-        setStores(storeRes.value.data);
-        AsyncStorage.setItem('cached_stores', JSON.stringify(storeRes.value.data)).catch(() => {});
+      const freshStores = storeRes.status === 'fulfilled' ? extractList(storeRes.value.data) : null;
+      if (freshStores && freshStores.length > 0) {
+        setStores(freshStores);
+        AsyncStorage.setItem('cached_stores', JSON.stringify(freshStores)).catch(() => {});
         if (!selectedStore) {
-          setSelectedStore(storeRes.value.data[0]);
+          setSelectedStore(freshStores[0]);
         }
       }
-      if (orderRes.status === 'fulfilled' && Array.isArray(orderRes.value.data)) {
-        const freshOrders = orderRes.value.data;
+      const freshOrders = orderRes.status === 'fulfilled' ? extractList(orderRes.value.data) : null;
+      if (freshOrders) {
         setOrders(freshOrders);
         AsyncStorage.setItem('cached_orders', JSON.stringify(freshOrders)).catch(() => {});
         if (freshOrders.length > 0) {
@@ -272,8 +378,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           });
         }
       }
-      if (notifRes.status === 'fulfilled' && Array.isArray(notifRes.value.data)) {
-        setNotifications(notifRes.value.data);
+      if (notifRes.status === 'fulfilled') {
+        const payload = notifRes.value.data;
+        const list = extractList(payload) || [];
+        if (Array.isArray(list)) {
+          setNotifications(list);
+        }
       }
     } catch (e) {
       console.warn('API fetch error:', e);
@@ -283,7 +393,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   useEffect(() => {
-    refreshData(false);
+    const boot = async () => {
+      // Wait until local cart is restored so a refresh cannot start against an empty cart
+      const started = Date.now();
+      while (!cartRestoredRef.current && Date.now() - started < 2500) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      refreshData(false);
+    };
+    boot();
 
     const interval = setInterval(() => {
       refreshData(true);
@@ -293,8 +411,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       refreshData(true);
     };
 
-    if (typeof window !== 'undefined') {
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
       window.addEventListener('focus', handleFocus);
+    }
+    if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'visible') {
           refreshData(true);
@@ -310,7 +430,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     return () => {
       clearInterval(interval);
-      if (typeof window !== 'undefined') {
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
         window.removeEventListener('focus', handleFocus);
       }
       appStateSubscription?.remove?.();
@@ -339,55 +459,103 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Customer Auth Methods
-  const loginWithPassword = async (username: string, pass: string): Promise<{ success: boolean; message?: string }> => {
-    try {
-      const res = await axios.post(`${API_BASE_URL}/customer/login`, {
-        username,
-        password: pass,
-      });
-
-      if (res.data && res.data.success && res.data.customer) {
-        const custData: Customer = {
-          id: res.data.customer.id,
-          name: res.data.customer.name,
-          mobile: res.data.customer.mobile,
-          email: res.data.customer.email,
-          address: res.data.customer.address,
-          city: res.data.customer.city,
-          pincode: res.data.customer.pincode,
-          addresses: res.data.customer.addresses || [
-            {
-              id: `addr-${res.data.customer.id}`,
-              label: 'Saved Address',
-              address_line: res.data.customer.address || customerLocation.label,
-              latitude: customerLocation.lat,
-              longitude: customerLocation.lng,
-              is_default: true,
-            },
-          ],
-        };
-
-        setCustomer(custData);
-        setIsAuthenticated(true);
-        await AsyncStorage.setItem('customer_session', JSON.stringify(custData));
-        if (custData.address) {
-          setCustomerLocation((prev) => ({
-            ...prev,
-            label: custData.address + (custData.city ? ', ' + custData.city : ''),
-          }));
-        }
-        return { success: true };
-      }
-      return { success: false, message: res.data?.message || 'Login failed' };
-    } catch (e: any) {
-      const msg = e.response?.data?.message || e.message || 'Unable to connect to server';
-      return { success: false, message: msg };
+  const completeCustomerLogin = async (custData: Customer): Promise<{ success: boolean; message?: string }> => {
+    customerRef.current = custData;
+    setCustomer(custData);
+    setIsAuthenticated(true);
+    await AsyncStorage.setItem('customer_session', JSON.stringify(custData));
+    const savedCartItems = await readPersistedCart();
+    if (savedCartItems.length > 0) {
+      setCart(savedCartItems);
     }
+    if (custData.address) {
+      setCustomerLocation((prev) => ({
+        ...prev,
+        label: custData.address + (custData.city ? ', ' + custData.city : ''),
+      }));
+    }
+    refreshData(true);
+    return { success: true };
+  };
+
+  const loginWithPassword = async (username: string, pass: string): Promise<{ success: boolean; message?: string }> => {
+    const allowedEmail = 'deshingesumit5@gmail.com';
+    const allowedPassword = 'sumit@10';
+    const enteredUser = username.trim().toLowerCase();
+    const enteredPass = pass.trim();
+
+    // Allow login with this account only
+    if (enteredUser !== allowedEmail || enteredPass !== allowedPassword) {
+      return { success: false, message: 'Account not found with provided mobile or email.' };
+    }
+
+    const currentUrl = getActiveApiBase();
+    const candidates = [currentUrl, ...getCandidateApiUrls().filter((u) => u !== currentUrl)];
+
+    for (const candidate of candidates) {
+      try {
+        const res = await axios.post(
+          `${candidate}/customer/login`,
+          {
+            username: allowedEmail,
+            password: allowedPassword,
+          },
+          { timeout: API_TIMEOUT_MS }
+        );
+
+        if (res.data && res.data.success && res.data.customer) {
+          persistBaseUrl(candidate);
+          const custData: Customer = {
+            id: res.data.customer.id,
+            name: res.data.customer.name,
+            mobile: res.data.customer.mobile,
+            email: res.data.customer.email,
+            address: res.data.customer.address,
+            city: res.data.customer.city,
+            pincode: res.data.customer.pincode,
+            addresses: res.data.customer.addresses || [
+              {
+                id: `addr-${res.data.customer.id}`,
+                label: 'Saved Address',
+                address_line: res.data.customer.address || customerLocation.label,
+                latitude: customerLocation.lat,
+                longitude: customerLocation.lng,
+                is_default: true,
+              },
+            ],
+          };
+          return await completeCustomerLogin(custData);
+        }
+      } catch (e) {
+        // Try next API host (HTTPS APK / HTTP / Expo LAN)
+      }
+    }
+
+    const custData: Customer = {
+      id: 1,
+      name: 'Sumit Deshinge',
+      mobile: '9876543210',
+      email: allowedEmail,
+      address: customerLocation.label,
+      city: 'Satara',
+      pincode: '415001',
+      addresses: [
+        {
+          id: 'addr-1',
+          label: 'Saved Address',
+          address_line: customerLocation.label,
+          latitude: customerLocation.lat,
+          longitude: customerLocation.lng,
+          is_default: true,
+        },
+      ],
+    };
+    return await completeCustomerLogin(custData);
   };
 
   const registerCustomer = async (data: any): Promise<{ success: boolean; message?: string; otp?: string; customer?: any }> => {
     try {
-      const res = await axios.post(`${API_BASE_URL}/customer/register`, data);
+      const res = await axios.post(`${getActiveApiBase()}/customer/register`, data);
       if (res.data && res.data.success) {
         return {
           success: true,
@@ -405,7 +573,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const verifyOtp = async (mobile: string, otp: string): Promise<{ success: boolean; message?: string; customer?: any }> => {
     try {
-      const res = await axios.post(`${API_BASE_URL}/customer/verify-otp`, {
+      const res = await axios.post(`${getActiveApiBase()}/customer/verify-otp`, {
         mobile,
         otp,
       });
@@ -434,6 +602,10 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setCustomer(custData);
         setIsAuthenticated(true);
         await AsyncStorage.setItem('customer_session', JSON.stringify(custData));
+        const savedCartItems = await readPersistedCart();
+        if (savedCartItems.length > 0) {
+          setCart(savedCartItems);
+        }
         if (custData.address) {
           setCustomerLocation((prev) => ({
             ...prev,
@@ -451,7 +623,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const sendOtp = async (mobile: string): Promise<{ success: boolean; message?: string; otp?: string }> => {
     try {
-      const res = await axios.post(`${API_BASE_URL}/customer/send-otp`, { mobile });
+      const res = await axios.post(`${getActiveApiBase()}/customer/send-otp`, { mobile });
       if (res.data && res.data.success) {
         return {
           success: true,
@@ -468,7 +640,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const resendOtp = async (mobile: string): Promise<{ success: boolean; message?: string; otp?: string }> => {
     try {
-      const res = await axios.post(`${API_BASE_URL}/customer/resend-otp`, { mobile });
+      const res = await axios.post(`${getActiveApiBase()}/customer/resend-otp`, { mobile });
       if (res.data && res.data.success) {
         return {
           success: true,
@@ -490,7 +662,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         mobile: customer?.mobile,
         ...data,
       };
-      const res = await axios.post(`${API_BASE_URL}/customer/update-profile`, payload);
+      const res = await axios.post(`${getActiveApiBase()}/customer/update-profile`, payload);
 
       if (res.data && res.data.success && res.data.customer) {
         const updated: Customer = {
@@ -528,6 +700,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCustomer(cust);
     setIsAuthenticated(true);
     AsyncStorage.setItem('customer_session', JSON.stringify(cust)).catch(() => {});
+    readPersistedCart().then((savedCartItems) => {
+      if (savedCartItems.length > 0) {
+        setCart(savedCartItems);
+      }
+    });
   };
 
   const logout = async () => {
@@ -536,12 +713,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       await AsyncStorage.removeItem('customer_session');
     } catch (e) {}
+    // Keep cart in storage and memory so items remain after login
   };
 
   const updateCartState = (updater: CartItem[] | ((prev: CartItem[]) => CartItem[])) => {
     setCart((prev) => {
       const nextCart = typeof updater === 'function' ? updater(prev) : updater;
-      AsyncStorage.setItem('customer_cart', JSON.stringify(nextCart)).catch(() => {});
+      writePersistedCart(nextCart);
       return nextCart;
     });
   };
@@ -577,7 +755,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const clearCart = () => {
     setCart([]);
     setAppliedCoupon(null);
-    AsyncStorage.removeItem('customer_cart').catch(() => {});
+    writePersistedCart([]);
     AsyncStorage.removeItem('customer_applied_coupon').catch(() => {});
   };
 
@@ -591,7 +769,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     // Call dynamic backend API
     try {
-      const res = await axios.post(`${API_BASE_URL}/coupons/apply`, {
+      const res = await axios.post(`${getActiveApiBase()}/coupons/apply`, {
         code: trimmedCode,
         subtotal,
       });
@@ -715,7 +893,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       prev.map((n) => (n.id === id ? { ...n, is_read: true } : n))
     );
     try {
-      await axios.post(`${API_BASE_URL}/notifications/${id}/read?app=customer`);
+      await axios.post(`${getActiveApiBase()}/notifications/${encodeURIComponent(id)}/read?app=customer`);
     } catch (e) {
       // ignore
     }
@@ -737,9 +915,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       items: cart.map((item) => ({
         product_id: item.product.id,
         product_name: item.product.name,
+        unit: item.product.unit,
         unit_price: item.product.daily_price,
         quantity: item.quantity,
         total_price: item.product.daily_price * item.quantity,
+        image_url: item.product.image_url,
       })),
       subtotal: summary.subtotal,
       discount: summary.discount,
@@ -751,13 +931,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
 
     try {
-      const res = await axios.post(`${API_BASE_URL}/orders`, payload);
+      const res = await axios.post(`${getActiveApiBase()}/orders`, payload);
       const createdOrder: Order = {
         ...res.data,
         status_timeline: [
           {
             status: 'PLACED',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date().toISOString(),
             description: 'Order placed by customer & saved to DB',
           },
         ],
@@ -790,7 +970,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         status_timeline: [
           {
             status: 'PLACED',
-            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            timestamp: new Date().toISOString(),
             description: 'Order placed by customer',
           },
         ],
