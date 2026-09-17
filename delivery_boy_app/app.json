@@ -18,10 +18,16 @@
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0f172a"
-      }
+      },
+      "package": "com.sumit10.delivery_boy_app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "51126731-3572-4ee2-8b8b-3db6afa43c02"
+      }
     }
   }
 }
